@@ -1,0 +1,123 @@
+#!/bin/bash
+
+set -e
+
+FUNC_NAME="$1"
+FILE_PATH="$2"
+
+if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
+	echo "Usage: $0 <function_name> <file_path>"
+	exit 1
+fi
+
+TMP_FILE=$(mktemp)
+LINE_NO=$(ggrep -nE "^[[:space:]]*func[[:space:]]+.*${FUNC_NAME}[[:space:]]*\(" "$FILE_PATH" | cut -d: -f1)
+
+gawk -v start="$LINE_NO" '
+  BEGIN {
+    need_context = 1
+    need_logger = 1
+    in_import = 0
+    in_func = 0
+  }
+
+  function v3loggify() {
+    gsub(/\<log\./, "logger.WithContextV3(ctx, nil).")
+    gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).")
+  }
+
+  function v3sentrify() {
+    gsub(/errorHandler\.ReportToSentryWithoutRequest\([^)]*\)/,
+          "errorHandler.ReportToSentryV3(ctx, err, nil)")
+    gsub(/errorHandler\.ReportToSentryWithFields\([^)]*\)/,
+          "errorHandler.ReportToSentryV3(ctx, err, nil)")
+  }
+
+  function db_contexify() {
+    gsub(/database\.Get\(/, "database.GetContext(ctx, ")
+    gsub(/database\.Exec\(/, "database.ExecContext(ctx, ")
+    gsub(/database\.Select\(/, "database.SelectContext(ctx, ")
+  }
+
+  function replace_interface_with_any() {
+    gsub(/\<interface\s*\{\s*\}/, "any")
+  }
+
+  # Auto import "context" and/or "logger" if needed
+  {
+    # Track multi-line import block
+    if ($0 ~ /^import[[:space:]]*\(/) {
+      in_import = 1
+    }
+
+    if (in_import && $0 ~ /"context"/) {
+      need_context = 0
+    }
+
+    if (in_import && $0 ~ /"finbox\/go-api\/functions\/logger"/) {
+      need_logger = 0
+    }
+
+    if (in_import && $0 ~ /^\)/) {
+      if (need_context) print "\t\"context\""
+      if (need_logger) print "\t\"finbox/go-api/functions/logger\""
+      in_import = 0
+    }
+  }
+
+  NR < start {
+    print
+    next
+  }
+
+  NR == start {
+    in_func = 1
+    brace_count = gsub(/{/, "{") - gsub(/}/, "}")
+
+    replace_interface_with_any()
+
+    # Extract function name and skip context injection if it ends with Cont
+    match($0, /^func[[:space:]]+([a-zA-Z0-9_]+)[[:space:]]*\(/, fn_match)
+    func_name = fn_match[1]
+
+    if (func_name !~ /Cont$/ && $0 !~ /ctx[[:space:]]*context\.Context/) {
+      if ($0 ~ /^func[[:space:]]+[a-zA-Z0-9_]+\([^)]+\)/) {
+        $0 = gensub(/\(([^)]*)\)/, "(ctx context.Context, \\1)", 1)
+      } else if ($0 ~ /^func[[:space:]]+[a-zA-Z0-9_]+\([[:space:]]*\)/) {
+        $0 = gensub(/\([[:space:]]*\)/, "(ctx context.Context)", 1)
+      }
+    }
+
+    v3loggify()
+    v3sentrify()
+    db_contexify()
+
+    print
+    next
+  }
+
+  in_func {
+    brace_count += gsub(/{/, "{")
+    brace_count -= gsub(/}/, "}")
+
+    replace_interface_with_any()
+    v3loggify()
+    v3sentrify()
+    db_contexify()
+
+    print
+
+    if (brace_count == 0) {
+      in_func = 0
+    }
+
+    next
+  }
+
+  {
+    print
+  }
+' "$FILE_PATH" >"$TMP_FILE"
+
+mv "$TMP_FILE" "$FILE_PATH"
+echo "🔄 Updated: $FILE_PATH"
