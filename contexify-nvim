@@ -4,10 +4,10 @@ set -e
 
 FUNC_NAME="$1"
 FILE_PATH="$2"
-DUPLICATE="$3" # pass "true" as third arg to duplicate
+DUPLICATE="$3" # pass "--duplicate" as third arg to duplicate
 
 if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
-	echo "Usage: $0 <function_name> <file_path> [true|false]"
+	echo "Usage: $0 <function_name> <file_path> [--duplicate]"
 	exit 1
 fi
 
@@ -113,7 +113,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
         in_func = 0
 
         # Duplicate mode
-        if (DUPLICATE == "true") {
+        if (DUPLICATE == "--duplicate") {
           print func_buffer
 
           # Inject ctx param in signature
