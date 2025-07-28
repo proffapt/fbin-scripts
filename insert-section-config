@@ -1,0 +1,131 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Generate UUIDv4
+config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+# Function to prompt for missing variables
+prompt_if_missing() {
+	local var_name="$1"
+	local prompt_text="$2"
+
+	if [ -z "${!var_name:-}" ]; then
+		read -rp "$prompt_text: " val
+		eval "$var_name=\"\$val\""
+	fi
+}
+
+# Escaping single quotes helper function
+escape_single_quotes() {
+	perl -pe "s/(?<!')'(?!')/''/g"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--source_entity_id)
+		SOURCE_ENTITY_ID="$2"
+		shift
+		;;
+	--organization_id)
+		ORG_ID="$2"
+		shift
+		;;
+	--program_name)
+		PROGRAM_NAME="$2"
+		shift
+		;;
+	--module_name)
+		MODULE_NAME="$2"
+		shift
+		;;
+	--sub_module_name)
+		SUB_MODULE_NAME="$2"
+		shift
+		;;
+	--section_data)
+		SECTION_DATA="$2"
+		shift
+		;;
+	--deactivate-id)
+		DEACTIVATE_ID="$2"
+		shift
+		;;
+	--skip-update | --disable-update) DEACTIVATE_ID="skip" ;;
+	*)
+		echo "Unknown option: $1"
+		exit 1
+		;;
+	esac
+	shift
+done
+
+# Prompt for missing values
+if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
+	prompt_if_missing DEACTIVATE_ID "Enter ID to deactivate (press ENTER, if not required)"
+fi
+prompt_if_missing SOURCE_ENTITY_ID "Enter source_entity_id"
+prompt_if_missing ORG_ID "Enter organization_id"
+prompt_if_missing PROGRAM_NAME "Enter program_name"
+prompt_if_missing MODULE_NAME "Enter module_name"
+prompt_if_missing SUB_MODULE_NAME "Enter sub_module_name"
+if [ -z "${SECTION_DATA:-}" ]; then
+	echo "No section_data provided. Opening editor..."
+	tmpfile=$(mktemp "/tmp/section_data.${config_id}.json")
+	nvim "$tmpfile"
+	SECTION_DATA=$(cat "$tmpfile")
+	rm "$tmpfile"
+fi
+
+# Escape SECTION_DATA for SQL
+ESCAPED_SECTION_DATA=$(printf '%s' "$SECTION_DATA" | escape_single_quotes)
+
+# Generate SQL
+echo
+if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
+	cat <<EOF
+-- Deactivate previous version:
+UPDATE section_config
+SET is_active = 'false'
+WHERE id = '$DEACTIVATE_ID';
+
+EOF
+fi
+
+cat <<EOF
+-- INSERT new section config:
+INSERT INTO section_config (
+    id,
+    source_entity_id,
+    organization_id,
+    program_name,
+    version,
+    module_name,
+    sub_module_name,
+    created_at,
+    created_by,
+    is_active,
+    section_data
+)
+VALUES (
+    '$config_id',
+    '$SOURCE_ENTITY_ID',
+    '$ORG_ID',
+    '$PROGRAM_NAME',
+    (
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM section_config
+        WHERE organization_id = '$ORG_ID'
+          AND program_name = '$PROGRAM_NAME'
+          AND module_name = '$MODULE_NAME'
+          AND sub_module_name = '$SUB_MODULE_NAME'
+    ),
+    '$MODULE_NAME',
+    '$SUB_MODULE_NAME',
+    NOW(),
+    'arpit.bhardwaj@finbox.in',
+    true,
+    '$ESCAPED_SECTION_DATA'
+);
+EOF
