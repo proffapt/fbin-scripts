@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Input values
+source_entity_id="1"
+lender_id="1.1"
+organization_id="2"
+program_name="3"
+module_name="PRE_DISBURSAL"
+wfc_name_prefix="abfl"
+
+pd_workflow_config() {
+	# UUID for config_id and JSON ID
+	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+	# Compose workflow_definition JSON for PRE_DISBURSAL module
+	read -r -d '' workflow_config_json <<EOM
+{
+  "id": "$config_id",
+  "name": "${wfc_name_prefix}_pre_disbursal",
+  "start": "ValidateUnderwritingPreDisbursal",
+  "states": [
+    {
+      "end": true,
+      "name": "ValidateUnderwritingPreDisbursal",
+      "type": "operation",
+      "actions": [
+        {
+          "functionRef": {
+            "refName": "ValidateUnderwritingPreDisbursal",
+            "arguments": {}
+          }
+        }
+      ],
+      "metadata": {
+        "moduleNameTag": "PRE_DISBURSAL",
+        "subModuleNameTag": "WAIT"
+      }
+    }
+  ],
+  "version": "1.0.0",
+  "specVersion": "0.0.1"
+}
+EOM
+
+	insert-workflow-config \
+		--config_id "$config_id" \
+		--source_entity_id "$source_entity_id" \
+		--lender_id "$lender_id" \
+		--organization_id "$organization_id" \
+		--program_name "$program_name" \
+		--module_name "$module_name" \
+		--workflow_definition "$workflow_config_json" \
+		--skip-update
+}
+
+pd_wait_section_config() {
+	# UUID for config_id and JSON ID
+	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+	# Compose section_data JSON for WAIT page
+	read -r -d '' section_data <<EOM
+{
+  "key": "WAIT",
+  "sections": [
+    {
+      "key": "wait",
+      "type": "page",
+      "title": "",
+      "sequence": 0,
+      "components": [
+        {
+          "type": "wait",
+          "fields": []
+        }
+      ],
+      "description": ""
+    }
+  ]
+}
+EOM
+
+	insert-section-config \
+		--config_id "$config_id" \
+		--source_entity_id "$source_entity_id" \
+		--organization_id "$organization_id" \
+		--program_name "$program_name" \
+		--module_name "$module_name" \
+		--sub_module_name "WAIT" \
+		--section_data "$section_data" \
+		--skip-update
+}
+
+pd_wait_section_config
+pd_workflow_config
