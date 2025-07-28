@@ -62,18 +62,9 @@ gawk -v start="$LINE_NO" '
   # Auto import "context" and/or "logger" if needed
   {
     # Track multi-line import block
-    if ($0 ~ /^import[[:space:]]*\(/) {
-      in_import = 1
-    }
-
-    if (in_import && $0 ~ /"context"/) {
-      need_context = 0
-    }
-
-    if (in_import && $0 ~ /"finbox\/go-api\/functions\/logger"/) {
-      need_logger = 0
-    }
-
+    if ($0 ~ /^import[[:space:]]*\(/) in_import = 1
+    if (in_import && $0 ~ /"context"/) need_context = 0
+    if (in_import && $0 ~ /"finbox\/go-api\/functions\/logger"/) need_logger = 0
     if (in_import && $0 ~ /^\)/) {
       if (need_context) print "\t\"context\""
       if (need_logger) print "\t\"finbox/go-api/functions/logger\""
@@ -113,13 +104,8 @@ gawk -v start="$LINE_NO" '
     brace_count -= gsub(/}/, "}")
 
     apply_all_transformations()
-
     print
-
-    if (brace_count == 0) {
-      in_func = 0
-    }
-
+    if (brace_count == 0) in_func = 0
     next
   }
 
