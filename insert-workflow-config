@@ -99,7 +99,7 @@ EOF
 fi
 
 cat <<EOF
--- INSERT new workflow_config:
+-- INSERT new workflow config:
 INSERT INTO workflow_config (
     config_id,
     source_entity_id,
