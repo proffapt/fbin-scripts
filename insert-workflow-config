@@ -2,9 +2,6 @@
 
 set -euo pipefail
 
-# Generate UUIDv4
-config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
-
 # Prompt for missing values
 prompt_if_missing() {
 	local var_name="$1"
@@ -24,6 +21,10 @@ escape_single_quotes() {
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
 	case $1 in
+	--config_id)
+		CONFIG_ID="$2"
+		shift
+		;;
 	--source_entity_id)
 		SOURCE_ENTITY_ID="$2"
 		shift
@@ -56,6 +57,14 @@ while [[ $# -gt 0 ]]; do
 	esac
 	shift
 done
+
+# Use config_id from input, otherwise generate new
+if [ -z "${CONFIG_ID:-}" ]; then
+	# Generate UUIDv4
+	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+else
+	config_id="$CONFIG_ID"
+fi
 
 # Prompt if missing
 if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
