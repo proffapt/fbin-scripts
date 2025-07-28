@@ -53,7 +53,9 @@ while [[ $# -gt 0 ]]; do
 		DEACTIVATE_ID="$2"
 		shift
 		;;
-	--skip-update | --disable-update) DEACTIVATE_ID="skip" ;;
+	--skip-update | --disable-update)
+		DEACTIVATE_ID="skip"
+		;;
 	*)
 		echo "Unknown option: $1"
 		exit 1
@@ -116,8 +118,7 @@ INSERT INTO section_config (
     created_by,
     is_active,
     section_data
-)
-VALUES (
+) VALUES (
     '$config_id',
     '$SOURCE_ENTITY_ID',
     '$ORG_ID',

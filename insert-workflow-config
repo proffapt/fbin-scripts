@@ -13,12 +13,12 @@ prompt_if_missing() {
 	fi
 }
 
-# Escape single quotes if not already escaped
+# Escape single quotes unless already escaped
 escape_single_quotes() {
 	perl -pe "s/(?<!')'(?!')/''/g"
 }
 
-# Parse CLI args
+# Parse CLI arguments
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--config_id)
@@ -27,6 +27,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--source_entity_id)
 		SOURCE_ENTITY_ID="$2"
+		shift
+		;;
+	--lender_id)
+		LENDER_ID="$2"
 		shift
 		;;
 	--organization_id)
@@ -49,7 +53,9 @@ while [[ $# -gt 0 ]]; do
 		DEACTIVATE_ID="$2"
 		shift
 		;;
-	--skip-update | --disable-update) DEACTIVATE_ID="skip" ;;
+	--skip-update | --disable-update)
+		DEACTIVATE_ID="skip"
+		;;
 	*)
 		echo "Unknown option: $1"
 		exit 1
@@ -58,23 +64,24 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-# Use config_id from input, otherwise generate new
+# Generate UUID if CONFIG_ID not provided
 if [ -z "${CONFIG_ID:-}" ]; then
-	# Generate UUIDv4
 	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 else
 	config_id="$CONFIG_ID"
 fi
 
-# Prompt if missing
+# Prompt for required fields
 if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
 	prompt_if_missing DEACTIVATE_ID "Enter config_id to deactivate (press ENTER to skip)"
 fi
 prompt_if_missing SOURCE_ENTITY_ID "Enter source_entity_id"
+prompt_if_missing LENDER_ID "Enter lender_id (press ENTER to skip)"
 prompt_if_missing ORG_ID "Enter organization_id"
 prompt_if_missing PROGRAM_NAME "Enter program_name"
 prompt_if_missing MODULE_NAME "Enter module_name"
 
+# Prompt or open editor for workflow_definition
 if [ -z "${WORKFLOW_DEFINITION:-}" ]; then
 	echo "No workflow_definition provided. Opening editor..."
 	tmpfile=$(mktemp "/tmp/workflow_def.${config_id}.json")
@@ -83,10 +90,46 @@ if [ -z "${WORKFLOW_DEFINITION:-}" ]; then
 	rm "$tmpfile"
 fi
 
-# Escape
+# Escape JSON
 ESCAPED_WORKFLOW_DEF=$(printf '%s' "$WORKFLOW_DEFINITION" | escape_single_quotes)
 
-# SQL Generation
+# Build insert columns and values
+columns=(
+	"config_id"
+	"source_entity_id"
+	"organization_id"
+	"program_name"
+	"version"
+	"module_name"
+	"created_by"
+	"is_active"
+	"workflow_definition"
+)
+values=(
+	"'$config_id'"
+	"'$SOURCE_ENTITY_ID'"
+	"'$ORG_ID'"
+	"'$PROGRAM_NAME'"
+	"(
+      SELECT COALESCE(MAX(version), 0) + 1
+      FROM workflow_config
+      WHERE organization_id = '$ORG_ID'
+        AND program_name = '$PROGRAM_NAME'
+        AND module_name = '$MODULE_NAME'
+    )"
+	"'$MODULE_NAME'"
+	"'arpit.bhardwaj@finbox.in'"
+	"true"
+	"'$ESCAPED_WORKFLOW_DEF'"
+)
+
+# Conditionally add lender_id
+if [ -n "${LENDER_ID:-}" ]; then
+	columns=("${columns[@]:0:2}" "lender_id" "${columns[@]:2}")
+	values=("${values[@]:0:2}" "'$LENDER_ID'" "${values[@]:2}")
+fi
+
+# Deactivation SQL if required
 echo
 if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" != "" ]; then
 	cat <<EOF
@@ -98,34 +141,24 @@ WHERE config_id = '$DEACTIVATE_ID';
 EOF
 fi
 
-cat <<EOF
--- INSERT new workflow config:
-INSERT INTO workflow_config (
-    config_id,
-    source_entity_id,
-    organization_id,
-    program_name,
-    version,
-    module_name,
-    created_by,
-    is_active,
-    workflow_definition
-)
-VALUES (
-    '$config_id',
-    '$SOURCE_ENTITY_ID',
-    '$ORG_ID',
-    '$PROGRAM_NAME',
-    (
-        SELECT COALESCE(MAX(version), 0) + 1
-        FROM workflow_config
-        WHERE organization_id = '$ORG_ID'
-          AND program_name = '$PROGRAM_NAME'
-          AND module_name = '$MODULE_NAME'
-    ),
-    '$MODULE_NAME',
-    'arpit.bhardwaj@finbox.in',
-    true,
-    '$ESCAPED_WORKFLOW_DEF'
-);
-EOF
+# Print final SQL
+echo "-- INSERT new workflow config:"
+echo "INSERT INTO workflow_config ("
+for ((i = 0; i < ${#columns[@]}; i++)); do
+	if [ $i -lt $((${#columns[@]} - 1)) ]; then
+		printf "    %s,\n" "${columns[i]}"
+	else
+		printf "    %s\n" "${columns[i]}"
+	fi
+done
+echo ") VALUES ("
+
+# Print values similarly
+for ((i = 0; i < ${#values[@]}; i++)); do
+	if [ $i -lt $((${#values[@]} - 1)) ]; then
+		printf "    %s,\n" "${values[i]}"
+	else
+		printf "    %s\n" "${values[i]}"
+	fi
+done
+echo ");"
