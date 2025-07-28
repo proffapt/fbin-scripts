@@ -4,115 +4,146 @@ set -e
 
 FUNC_NAME="$1"
 FILE_PATH="$2"
+DUPLICATE="$3" # pass "true" as third arg to duplicate
 
 if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
-	echo "Usage: $0 <function_name> <file_path>"
+	echo "Usage: $0 <function_name> <file_path> [true|false]"
 	exit 1
 fi
 
 TMP_FILE=$(mktemp)
 LINE_NO=$(ggrep -nE "^[[:space:]]*func[[:space:]]+.*${FUNC_NAME}[[:space:]]*\(" "$FILE_PATH" | cut -d: -f1)
 
-gawk -v start="$LINE_NO" '
+gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   BEGIN {
     need_context = 1
     need_logger = 1
     in_import = 0
     in_func = 0
+    func_buffer = ""
   }
 
-  function v3loggify() {
-    gsub(/\<log\./, "logger.WithContextV3(ctx, nil).")
-    gsub(/\<logger.Log\./, "logger.WithContextV3(ctx, nil).")
-    gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).")
+  function v3loggify(s) {
+    gsub(/\<log\./, "logger.WithContextV3(ctx, nil).", s)
+    gsub(/\<logger.Log\./, "logger.WithContextV3(ctx, nil).", s)
+    gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    return s
   }
 
-  function v3sentrify() {
+  function v3sentrify(s) {
     gsub(/errorHandler\.ReportToSentryWithoutRequest\([^)]*\)/,
-          "errorHandler.ReportToSentryV3(ctx, err, nil)")
+          "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
     gsub(/errorHandler\.ReportToSentryWithFields\([^)]*\)/,
-          "errorHandler.ReportToSentryV3(ctx, err, nil)")
+          "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
+    return s
   }
 
-  function db_contexify() {
-    gsub(/database\.Get\(/, "database.GetContext(ctx, ")
-    gsub(/database\.Exec\(/, "database.ExecContext(ctx, ")
-    gsub(/database\.Select\(/, "database.SelectContext(ctx, ")
+  function db_contexify(s) {
+    gsub(/database\.Get\(/, "database.GetContext(ctx, ", s)
+    gsub(/database\.Exec\(/, "database.ExecContext(ctx, ", s)
+    gsub(/database\.Select\(/, "database.SelectContext(ctx, ", s)
+    return s
   }
 
-  function redis_contexify() {
-    gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,")
-    gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,")
-    gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,")
-    gsub(/redis\.Set\(/, "redis.SetWithContext(ctx, ")
+  function redis_contexify(s) {
+    gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,", s)
+    gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,", s)
+    gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,", s)
+    gsub(/redis\.Set\(/, "redis.SetWithContext(ctx, ", s)
+    return s
   }
 
-  function replace_interface_with_any() {
-    gsub(/\<interface\s*\{\s*\}/, "any")
+  function replace_interface_with_any(s) {
+    gsub(/\<interface\s*\{\s*\}/, "any", s)
+    return s
   }
 
-  function apply_all_transformations() {
-    replace_interface_with_any()
-    v3loggify()
-    v3sentrify()
-    db_contexify()
-    redis_contexify()
+  function apply_all_transformations(s) {
+    s = replace_interface_with_any(s)
+    s = v3loggify(s)
+    s = v3sentrify(s)
+    s = db_contexify(s)
+    s = redis_contexify(s)
+    return s
   }
 
-  # Auto import "context" and/or "logger" if needed
+  function inject_ctx_param(sig_line) {
+    if (sig_line ~ /ctx[[:space:]]+context\.Context/) return sig_line
+    if (sig_line ~ /\([[:space:]]*\)/) return gensub(/\([[:space:]]*\)/, "(ctx context.Context)", 1, sig_line)
+    return gensub(/\(([^)]*)\)/, "(ctx context.Context, \\1)", 1, sig_line)
+  }
+
+  function modify_function_name(sig_line) {
+    return gensub("func[[:space:]]+" FUNC_NAME, "func " FUNC_NAME "WithContext", 1, sig_line)
+  }
+
   {
-    # Track multi-line import block
+    # Handle imports
     if ($0 ~ /^import[[:space:]]*\(/) in_import = 1
+
     if (in_import && $0 ~ /"context"/) need_context = 0
     if (in_import && $0 ~ /"finbox\/go-api\/functions\/logger"/) need_logger = 0
+
     if (in_import && $0 ~ /^\)/) {
       if (need_context) print "\t\"context\""
       if (need_logger) print "\t\"finbox/go-api/functions/logger\""
       in_import = 0
     }
-  }
 
-  NR < start {
-    print
-    next
-  }
-
-  NR == start {
-    in_func = 1
-    brace_count = gsub(/{/, "{") - gsub(/}/, "}")
-
-    # Extract function name and skip context injection if it ends with Cont
-    match($0, /^func[[:space:]]+([a-zA-Z0-9_]+)[[:space:]]*\(/, fn_match)
-    func_name = fn_match[1]
-
-    if (func_name !~ /Cont$/ && $0 !~ /ctx[[:space:]]*context\.Context/) {
-      if ($0 ~ /^func[[:space:]]+[a-zA-Z0-9_]+\([^)]+\)/) {
-        $0 = gensub(/\(([^)]*)\)/, "(ctx context.Context, \\1)", 1)
-      } else if ($0 ~ /^func[[:space:]]+[a-zA-Z0-9_]+\([[:space:]]*\)/) {
-        $0 = gensub(/\([[:space:]]*\)/, "(ctx context.Context)", 1)
-      }
+    # Before function: print as is
+    if (NR < start) {
+      print
+      next
     }
 
-    replace_interface_with_any()
+    # Detect function start
+    if (NR == start) {
+      in_func = 1
+      brace_count = gsub(/{/, "{") - gsub(/}/, "}")
+      func_buffer = $0 "\n"
+      next
+    }
 
-    print
-    next
-  }
+    # Accumulate full function
+    if (in_func) {
+      func_buffer = func_buffer $0 "\n"
+      brace_count += gsub(/{/, "{")
+      brace_count -= gsub(/}/, "}")
+      if (brace_count == 0) {
+        in_func = 0
 
-  in_func {
-    brace_count += gsub(/{/, "{")
-    brace_count -= gsub(/}/, "}")
+        # Duplicate mode
+        if (DUPLICATE == "true") {
+          print func_buffer
 
-    apply_all_transformations()
-    print
-    if (brace_count == 0) in_func = 0
-    next
-  }
+          # Inject ctx param in signature
+          split(func_buffer, lines, "\n")
+          lines[1] = inject_ctx_param(lines[1])
+          lines[1] = modify_function_name(lines[1])
 
-  {
+          dup_buf = lines[1]
+          for (i = 2; i <= length(lines)-1; i++) dup_buf = dup_buf "\n" lines[i]
+
+          print apply_all_transformations(dup_buf)
+        } else {
+          # Modify original function
+          split(func_buffer, lines, "\n")
+          lines[1] = inject_ctx_param(lines[1])
+
+          mod_buf = lines[1]
+          for (i = 2; i <= length(lines)-1; i++) mod_buf = mod_buf "\n" lines[i]
+
+          print apply_all_transformations(mod_buf)
+        }
+        next
+      }
+      next
+    }
+
+    # After function
     print
   }
 ' "$FILE_PATH" >"$TMP_FILE"
 
 mv "$TMP_FILE" "$FILE_PATH"
-echo "🔄 Updated: $FILE_PATH"
+echo "✅ Updated: $FILE_PATH"
