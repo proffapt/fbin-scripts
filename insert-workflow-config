@@ -129,7 +129,7 @@ values=(
 )
 
 # Conditionally add lender_id
-if [ -n "${LENDER_ID:-}" ]; then
+if [ "${LENDER_ID:-}" != "skip" ] && [ "${LENDER_ID:-}" != "" ]; then
 	columns=("${columns[@]:0:2}" "lender_id" "${columns[@]:2}")
 	values=("${values[@]:0:2}" "'$LENDER_ID'" "${values[@]:2}")
 fi
