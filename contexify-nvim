@@ -23,6 +23,7 @@ gawk -v start="$LINE_NO" '
 
   function v3loggify() {
     gsub(/\<log\./, "logger.WithContextV3(ctx, nil).")
+    gsub(/\<logger.Log\./, "logger.WithContextV3(ctx, nil).")
     gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).")
   }
 
@@ -39,8 +40,23 @@ gawk -v start="$LINE_NO" '
     gsub(/database\.Select\(/, "database.SelectContext(ctx, ")
   }
 
+  function redis_contexify() {
+    gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,")
+    gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,")
+    gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,")
+    gsub(/redis\.Set\(/, "redis.SetWithContext(ctx, ")
+  }
+
   function replace_interface_with_any() {
     gsub(/\<interface\s*\{\s*\}/, "any")
+  }
+
+  function apply_all_transformations() {
+    replace_interface_with_any()
+    v3loggify()
+    v3sentrify()
+    db_contexify()
+    redis_contexify()
   }
 
   # Auto import "context" and/or "logger" if needed
@@ -74,8 +90,6 @@ gawk -v start="$LINE_NO" '
     in_func = 1
     brace_count = gsub(/{/, "{") - gsub(/}/, "}")
 
-    replace_interface_with_any()
-
     # Extract function name and skip context injection if it ends with Cont
     match($0, /^func[[:space:]]+([a-zA-Z0-9_]+)[[:space:]]*\(/, fn_match)
     func_name = fn_match[1]
@@ -88,9 +102,7 @@ gawk -v start="$LINE_NO" '
       }
     }
 
-    v3loggify()
-    v3sentrify()
-    db_contexify()
+    apply_all_transformations()
 
     print
     next
@@ -100,10 +112,7 @@ gawk -v start="$LINE_NO" '
     brace_count += gsub(/{/, "{")
     brace_count -= gsub(/}/, "}")
 
-    replace_interface_with_any()
-    v3loggify()
-    v3sentrify()
-    db_contexify()
+    apply_all_transformations()
 
     print
 
