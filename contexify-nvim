@@ -102,7 +102,7 @@ gawk -v start="$LINE_NO" '
       }
     }
 
-    apply_all_transformations()
+    replace_interface_with_any()
 
     print
     next
