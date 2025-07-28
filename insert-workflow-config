@@ -33,6 +33,9 @@ while [[ $# -gt 0 ]]; do
 		LENDER_ID="$2"
 		shift
 		;;
+	--skip-lender)
+		LENDER_ID="skip"
+		;;
 	--organization_id)
 		ORG_ID="$2"
 		shift
@@ -75,8 +78,10 @@ fi
 if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
 	prompt_if_missing DEACTIVATE_ID "Enter config_id to deactivate (press ENTER to skip)"
 fi
+if [ "${LENDER_ID:-}" != "skip" ] && [ "${LENDER_ID:-}" == "" ]; then
+	prompt_if_missing LENDER_ID "Enter lender_id (press ENTER to skip)"
+fi
 prompt_if_missing SOURCE_ENTITY_ID "Enter source_entity_id"
-prompt_if_missing LENDER_ID "Enter lender_id (press ENTER to skip)"
 prompt_if_missing ORG_ID "Enter organization_id"
 prompt_if_missing PROGRAM_NAME "Enter program_name"
 prompt_if_missing MODULE_NAME "Enter module_name"
@@ -111,11 +116,11 @@ values=(
 	"'$ORG_ID'"
 	"'$PROGRAM_NAME'"
 	"(
-      SELECT COALESCE(MAX(version), 0) + 1
-      FROM workflow_config
-      WHERE organization_id = '$ORG_ID'
-        AND program_name = '$PROGRAM_NAME'
-        AND module_name = '$MODULE_NAME'
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM workflow_config
+        WHERE organization_id = '$ORG_ID'
+          AND program_name = '$PROGRAM_NAME'
+          AND module_name = '$MODULE_NAME'
     )"
 	"'$MODULE_NAME'"
 	"'arpit.bhardwaj@finbox.in'"
