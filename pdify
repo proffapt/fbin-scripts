@@ -90,43 +90,6 @@ EOM
 		--skip-update
 }
 
-fetch_workflow_data() {
-	local api_url="https://redash.finbox.in/api/queries/5023/results.json?api_key=5yUgMxeiX3a9xyirLxFm8MlIg6sdmWauRlUzI0yf"
-	local json_data
-
-	json_data=$(curl -s -X GET "$api_url")
-
-	if [ $? -ne 0 ]; then
-		echo "❌ Error: Failed to fetch data from API"
-		return 1
-	fi
-
-	if echo "$json_data" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
-		echo "❌ Error: No cached result found for this query"
-		return 1
-	fi
-
-	# Declare global arrays
-	declare -g -a workflow_ids=()
-	declare -g -A workflow_map=()
-
-	while IFS= read -r row; do
-		if [ -n "$row" ]; then
-			local workflow_id workflow_name workflow_data
-			workflow_id=$(echo "$row" | jq -r '.workflow_id')
-			workflow_name=$(echo "$row" | jq -r '.workflow_name')
-			workflow_data=$(echo "$row" | jq -r '.workflow_data')
-
-			workflow_ids+=("$workflow_id")
-			workflow_map["$workflow_id"]="$workflow_data"
-
-			echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
-		fi
-	done < <(echo "$json_data" | jq -c '.query_result.data.rows[]')
-
-	echo "✅ Total workflows: ${#workflow_ids[@]}"
-}
-
 insert_pre_disbursal_module_jq() {
 	local json="$1"
 	echo "$json" | jq '
@@ -146,6 +109,56 @@ insert_pre_disbursal_module_jq() {
 	)'
 }
 
-insert_pre_disbursal_module_sql() {
-	echo "fuck"
+escape_single_quotes() {
+	perl -pe "s/(?<!')'(?!')/''/g"
 }
+
+insert_pre_disbursal_module_sql() {
+	local workflow_id="$1"
+	local modified_json="$2"
+	local workflow_name="$3"
+	local escaped_json
+
+	# Escape single quotes in JSON for SQL
+	escaped_json=$(echo "$modified_json" | escape_single_quotes)
+
+	cat <<EOF
+-- Add PRE_DISBURSAL module in $workflow_name
+UPDATE workflow
+SET workflow_data = '$escaped_json'
+WHERE workflow_id = '$workflow_id';
+
+EOF
+}
+
+API_URL="https://redash.finbox.in/api/queries/5031/results.json?api_key=HB8KPPBokm1ma0KqoI1IohjtMlIhVNJxfcgBhZSJ"
+JSON_DATA=$(curl -s -X GET "$API_URL")
+
+if [ $? -ne 0 ]; then
+	echo "❌ Error: Failed to fetch data from API"
+	exit 1
+fi
+
+if echo "$JSON_DATA" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
+	echo "❌ Error: No cached result found for this query"
+	exit 1
+fi
+
+while IFS= read -r row; do
+	if [ -n "$row" ]; then
+		workflow_id=$(echo "$row" | jq -r '.workflow_id')
+		workflow_name=$(echo "$row" | jq -r '.workflow_name')
+		workflow_data=$(echo "$row" | jq -r '.workflow_data')
+
+		go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_module_in_${workflow_name}" 2>&1)
+		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+
+		workflow_data_with_pd_module=$(insert_pre_disbursal_module_jq "$workflow_data")
+		insert_pre_disbursal_module_sql "$workflow_id" "$workflow_data_with_pd_module" "$workflow_name" >"$(pwd)/$migration_file"
+
+		git add "$(pwd)/$migration_file"
+		git commit -m "feat: added pre disbursal module in $workflow_name"
+
+		echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
+	fi
+done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
