@@ -176,3 +176,34 @@ while IFS= read -r row; do
 		echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
+
+JSON_DATA=$(call_redash "https://redash.finbox.in/api/queries/5035/results.json?api_key=KTOPKHNPEVb0D4NedTPYpJ1jGiwkomSwi41Y0MFs")
+# Fetch source_entity_id
+source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
+echo "📥 RECEIVED > source_entity_id: $source_entity_id"
+# Fetch organization_id and program_name for the source_entity_id
+while IFS= read -r row; do
+	if [ -n "$row" ]; then
+		organization_id=$(echo "$row" | jq -r '.organization_id')
+		program_name=$(echo "$row" | jq -r '.program_name')
+
+		echo "📥 RECEIVED > organization_id: $organization_id"
+		echo "📥 RECEIVED > program_name: $program_name"
+	fi
+done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
+
+go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_workflow_config_${WFC_NAME_PREFIX}" 2>&1)
+migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+
+pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}" >"$(pwd)/$migration_file"
+git add "$(pwd)/$migration_file"
+git commit -m "feat: added PRE_DISBURSAL workflow config for $WFC_NAME_PREFIX"
+echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module)"
+
+go_migration_output=$(go run cmd/sql/generate.go "-table=add_wait_submodule_config_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
+migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+
+pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name" >"$(pwd)/$migration_file"
+git add "$(pwd)/$migration_file"
+git commit -m "feat: added wait submodule for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
+echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module)"
