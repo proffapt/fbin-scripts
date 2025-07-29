@@ -136,19 +136,26 @@ WHERE workflow_id = '$workflow_id';
 EOF
 }
 
-API_URL="https://redash.finbox.in/api/queries/5031/results.json?api_key=HB8KPPBokm1ma0KqoI1IohjtMlIhVNJxfcgBhZSJ"
-JSON_DATA=$(curl -s -X GET "$API_URL")
+call_redash() {
+	local api_url="$1"
+	local json_data
 
-if [ $? -ne 0 ]; then
-	echo "❌ Error: Failed to fetch data from API"
-	exit 1
-fi
+	json_data=$(curl -s -X GET "$api_url")
 
-if echo "$JSON_DATA" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
-	echo "❌ Error: No cached result found for this query"
-	exit 1
-fi
+	if [ $? -ne 0 ]; then
+		echo "❌ Error: Failed to fetch data from API"
+		exit 1
+	fi
 
+	if echo "$json_data" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
+		echo "❌ Error: No cached result found for this query"
+		exit 1
+	fi
+
+	echo "$json_data"
+}
+
+JSON_DATA=$(call_redash "https://redash.finbox.in/api/queries/5031/results.json?api_key=HB8KPPBokm1ma0KqoI1IohjtMlIhVNJxfcgBhZSJ")
 while IFS= read -r row; do
 	if [ -n "$row" ]; then
 		workflow_id=$(echo "$row" | jq -r '.workflow_id')
