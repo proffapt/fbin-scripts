@@ -136,6 +136,33 @@ WHERE workflow_id = '$workflow_id';
 EOF
 }
 
+pd_temporal_rollout_100() {
+	local source_entity_id="$1"
+
+	# UUID for config_id and JSON ID
+	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+	cat <<EOF
+-- Set temporal rollout to 100 for PRE_DISBURSAL module
+INSERT INTO temporal_rollouts (
+    rollout_id,
+    source_entity_id,
+    module_name,
+    created_at,
+    updated_at,
+    percentage
+) VALUES (
+    '$config_id',
+    '$source_entity_id',
+    '$MODULE_NAME',
+    NOW(),
+    NOW(),
+    100
+);
+
+EOF
+}
+
 call_redash() {
 	local api_url="$1"
 	local json_data
@@ -203,7 +230,7 @@ migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}" >"$(pwd)/$migration_file"
 git add "$(pwd)/$migration_file"
 git commit -m "feat: added PRE_DISBURSAL workflow config for $WFC_NAME_PREFIX"
-echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module)"
+echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module"
 
 go_migration_output=$(go run cmd/sql/generate.go "-table=add_wait_submodule_config_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
 migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
@@ -211,4 +238,12 @@ migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name" >"$(pwd)/$migration_file"
 git add "$(pwd)/$migration_file"
 git commit -m "feat: added wait submodule for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
-echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module)"
+echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module"
+
+go_migration_output=$(go run cmd/sql/generate.go "-table=set_temporal_rollout_to_100_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
+migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+
+pd_temporal_rollout_100 "$source_entity_id" >"$(pwd)/$migration_file"
+git add "$(pwd)/$migration_file"
+git commit -m "feat: set temporal rollout to 100 for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
+echo "✅ [$WFC_NAME_PREFIX] Set TEMPORAL ROLLOUT to 100 for PRE_DISBURSAL module"
