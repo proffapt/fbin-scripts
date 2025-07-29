@@ -164,10 +164,15 @@ while IFS= read -r row; do
 
 		WFC_NAME_PREFIX=$(echo "$workflow_name" | cut -d'_' -f1)
 
+		workflow_data_with_pd_module=$(insert_pre_disbursal_module_jq "$workflow_data")
+		if [ "$workflow_data_with_pd_module" == "$workflow_data" ]; then
+			echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL or no ESIGN"
+			continue
+		fi
+
 		go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_module_in_${workflow_name}" 2>&1)
 		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 
-		workflow_data_with_pd_module=$(insert_pre_disbursal_module_jq "$workflow_data")
 		insert_pre_disbursal_module_sql "$workflow_id" "$workflow_data_with_pd_module" "$workflow_name" >"$(pwd)/$migration_file"
 
 		git add "$(pwd)/$migration_file"
