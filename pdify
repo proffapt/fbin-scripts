@@ -1,14 +1,15 @@
 #!/opt/homebrew/bin/bash
 
-# Input values
-source_entity_id="1"
-lender_id="1.1"
-organization_id="2"
-program_name="3"
-module_name="PRE_DISBURSAL"
-wfc_name_prefix="abfl"
+# Global Vars
+MODULE_NAME="PRE_DISBURSAL"
+WFC_NAME_PREFIX="default"
 
 pd_workflow_config() {
+	local source_entity_id="$1"
+	local organization_id="$2"
+	local program_name="$3"
+	local lender_id="$4"
+
 	# UUID for config_id and JSON ID
 	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
@@ -16,7 +17,7 @@ pd_workflow_config() {
 	read -r -d '' workflow_config_json <<EOM
 {
   "id": "$config_id",
-  "name": "${wfc_name_prefix}_pre_disbursal",
+  "name": "${WFC_NAME_PREFIX}_pre_disbursal",
   "start": "ValidateUnderwritingPreDisbursal",
   "states": [
     {
@@ -48,12 +49,16 @@ EOM
 		--lender_id "$lender_id" \
 		--organization_id "$organization_id" \
 		--program_name "$program_name" \
-		--module_name "$module_name" \
+		--module_name "$MODULE_NAME" \
 		--workflow_definition "$workflow_config_json" \
 		--skip-update
 }
 
 pd_wait_section_config() {
+	local source_entity_id="$1"
+	local organization_id="$2"
+	local program_name="$3"
+
 	# UUID for config_id and JSON ID
 	config_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
@@ -84,7 +89,7 @@ EOM
 		--source_entity_id "$source_entity_id" \
 		--organization_id "$organization_id" \
 		--program_name "$program_name" \
-		--module_name "$module_name" \
+		--module_name "$MODULE_NAME" \
 		--sub_module_name "WAIT" \
 		--section_data "$section_data" \
 		--skip-update
@@ -149,6 +154,8 @@ while IFS= read -r row; do
 		workflow_id=$(echo "$row" | jq -r '.workflow_id')
 		workflow_name=$(echo "$row" | jq -r '.workflow_name')
 		workflow_data=$(echo "$row" | jq -r '.workflow_data')
+
+		WFC_NAME_PREFIX=$(echo "$workflow_name" | cut -d'_' -f1)
 
 		go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_module_in_${workflow_name}" 2>&1)
 		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
