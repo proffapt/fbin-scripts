@@ -166,7 +166,7 @@ while IFS= read -r row; do
 
 		workflow_data_with_pd_module=$(insert_pre_disbursal_module_jq "$workflow_data")
 		if [ "$workflow_data_with_pd_module" == "$workflow_data" ]; then
-			echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL or no ESIGN"
+			echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL module or has no ESIGN module"
 			continue
 		fi
 
