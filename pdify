@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/opt/homebrew/bin/bash
 
 # Input values
 source_entity_id="1"
@@ -90,5 +90,62 @@ EOM
 		--skip-update
 }
 
-pd_wait_section_config
-pd_workflow_config
+fetch_workflow_data() {
+	local api_url="https://redash.finbox.in/api/queries/5023/results.json?api_key=5yUgMxeiX3a9xyirLxFm8MlIg6sdmWauRlUzI0yf"
+	local json_data
+
+	json_data=$(curl -s -X GET "$api_url")
+
+	if [ $? -ne 0 ]; then
+		echo "❌ Error: Failed to fetch data from API"
+		return 1
+	fi
+
+	if echo "$json_data" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
+		echo "❌ Error: No cached result found for this query"
+		return 1
+	fi
+
+	# Declare global arrays
+	declare -g -a workflow_ids=()
+	declare -g -A workflow_map=()
+
+	while IFS= read -r row; do
+		if [ -n "$row" ]; then
+			local workflow_id workflow_name workflow_data
+			workflow_id=$(echo "$row" | jq -r '.workflow_id')
+			workflow_name=$(echo "$row" | jq -r '.workflow_name')
+			workflow_data=$(echo "$row" | jq -r '.workflow_data')
+
+			workflow_ids+=("$workflow_id")
+			workflow_map["$workflow_id"]="$workflow_data"
+
+			echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
+		fi
+	done < <(echo "$json_data" | jq -c '.query_result.data.rows[]')
+
+	echo "✅ Total workflows: ${#workflow_ids[@]}"
+}
+
+insert_pre_disbursal_module_jq() {
+	local json="$1"
+	echo "$json" | jq '
+	.modules |= (
+	  if any(.[]; .moduleName == "ESIGN") and (all(.[]; .moduleName != "PRE_DISBURSAL")) then
+	    map(
+	      if .moduleName == "ESIGN" then
+	        {"moduleName": "PRE_DISBURSAL", "moduleType": "POST_OFFER", "isActive": true},
+	        .
+	      else
+	        .
+	      end
+	    )
+	  else
+	    .
+	  end
+	)'
+}
+
+insert_pre_disbursal_module_sql() {
+	echo "fuck"
+}
