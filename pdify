@@ -175,24 +175,27 @@ EOF
 
 call_redash() {
 	local api_url="$1"
+	local __resultvar="$2"
 	local json_data
 
-	json_data=$(curl -s -X GET "$api_url")
-
-	if [ $? -ne 0 ]; then
+	if ! json_data=$(curl -s --fail -X GET "$api_url"); then
 		echo "❌ Error: Failed to fetch data from API"
-		exit 1
+		return 1
 	fi
 
-	if echo "$json_data" | jq -e '.message == "No cached result found for this query."' >/dev/null; then
+	if echo "$json_data" | jq -e '.message == "No cached result found for this query."' >/dev/null 2>&1; then
 		echo "❌ Error: No cached result found for this query"
-		exit 1
+		return 1
 	fi
 
-	echo "$json_data"
+	# Set the output variable indirectly
+	eval "$__resultvar=\"\$json_data\""
+	return 0
 }
 
-JSON_DATA=$(call_redash "$WORKFLOW_LIST_REDASH_QUERY_API")
+if ! call_redash "$WORKFLOW_LIST_REDASH_QUERY_API" JSON_DATA; then
+	exit 1
+fi
 while IFS= read -r row; do
 	if [ -n "$row" ]; then
 		workflow_id=$(echo "$row" | jq -r '.workflow_id')
@@ -219,7 +222,9 @@ while IFS= read -r row; do
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
-JSON_DATA=$(call_redash "$SOURCE_INFO_REDASH_QUERY_API")
+if ! call_redash "$SOURCE_INFO_REDASH_QUERY_API" JSON_DATA; then
+	exit 1
+fi
 # Fetch source_entity_id
 source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
 echo "📥 RECEIVED > source_entity_id: $source_entity_id"
