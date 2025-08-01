@@ -4,6 +4,16 @@
 MODULE_NAME="PRE_DISBURSAL"
 WFC_NAME_PREFIX="default"
 
+# Input Vars
+
+if [ -z "$1" ] || [ -z "$2" ]; then
+	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API>"
+	exit 1
+fi
+
+SOURCE_INFO_REDASH_QUERY_API="$1"
+WORKFLOW_LIST_REDASH_QUERY_API="$2"
+
 pd_workflow_config() {
 	local source_entity_id="$1"
 	local organization_id="$2"
@@ -182,7 +192,7 @@ call_redash() {
 	echo "$json_data"
 }
 
-JSON_DATA=$(call_redash "https://redash.finbox.in/api/queries/5031/results.json?api_key=HB8KPPBokm1ma0KqoI1IohjtMlIhVNJxfcgBhZSJ")
+JSON_DATA=$(call_redash "$WORKFLOW_LIST_REDASH_QUERY_API")
 while IFS= read -r row; do
 	if [ -n "$row" ]; then
 		workflow_id=$(echo "$row" | jq -r '.workflow_id')
@@ -209,7 +219,7 @@ while IFS= read -r row; do
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
-JSON_DATA=$(call_redash "https://redash.finbox.in/api/queries/5035/results.json?api_key=KTOPKHNPEVb0D4NedTPYpJ1jGiwkomSwi41Y0MFs")
+JSON_DATA=$(call_redash "$SOURCE_INFO_REDASH_QUERY_API")
 # Fetch source_entity_id
 source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
 echo "📥 RECEIVED > source_entity_id: $source_entity_id"
