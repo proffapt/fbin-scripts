@@ -138,4 +138,5 @@ INSERT INTO section_config (
     true,
     '$ESCAPED_SECTION_DATA'
 );
+
 EOF
