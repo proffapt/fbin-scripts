@@ -7,13 +7,14 @@ WFC_NAME_PREFIX="default"
 # Input Vars
 
 if [ -z "$1" ] || [ -z "$2" ]; then
-	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API>" "[--commit|--print|--diff]"
+	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API> [--commit|--print|--diff] [--silent]"
 	exit 1
 fi
 
 SOURCE_INFO_REDASH_QUERY_API="$1"
 WORKFLOW_LIST_REDASH_QUERY_API="$2"
 OUTPUT_FORMAT="${3:---commit}"
+SILENT="${4:-}"
 
 pd_workflow_config() {
 	local source_entity_id="$1"
@@ -194,6 +195,12 @@ call_redash() {
 	return 0
 }
 
+smart_echo() {
+	if [ "$SILENT" != "--silent" ]; then
+		echo "$1"
+	fi
+}
+
 if ! call_redash "$WORKFLOW_LIST_REDASH_QUERY_API" JSON_DATA; then
 	exit 1
 fi
@@ -209,7 +216,7 @@ while IFS= read -r row; do
 
 		workflow_data_diff=$(diff --color=always -u <(echo "$workflow_data") <(echo "$workflow_data_with_pd_module"))
 		if [ "$workflow_data_diff" == "" ]; then
-			echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL module or has no ESIGN module"
+			smart_echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL module or has no ESIGN module"
 			continue
 		fi
 
@@ -227,7 +234,7 @@ while IFS= read -r row; do
 			git add "$(pwd)/$migration_file"
 			git commit -m "feat: added pre disbursal module in $workflow_name"
 
-			echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
+			smart_echo "✅ Processed workflow: $workflow_name (ID: $workflow_id)"
 		fi
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
@@ -238,15 +245,15 @@ if [ "$OUTPUT_FORMAT" != '--diff' ]; then
 	fi
 	# Fetch source_entity_id
 	source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
-	echo "📥 RECEIVED > source_entity_id: $source_entity_id"
+	smart_echo "📥 RECEIVED > source_entity_id: $source_entity_id"
 	# Fetch organization_id and program_name for the source_entity_id
 	while IFS= read -r row; do
 		if [ -n "$row" ]; then
 			organization_id=$(echo "$row" | jq -r '.organization_id')
 			program_name=$(echo "$row" | jq -r '.program_name')
 
-			echo "📥 RECEIVED > organization_id: $organization_id"
-			echo "📥 RECEIVED > program_name: $program_name"
+			smart_echo "📥 RECEIVED > organization_id: $organization_id"
+			smart_echo "📥 RECEIVED > program_name: $program_name"
 		fi
 	done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
@@ -260,7 +267,7 @@ if [ "$OUTPUT_FORMAT" != '--diff' ]; then
 		git add "$(pwd)/$migration_file"
 		git commit -m "feat: added PRE_DISBURSAL workflow config for $WFC_NAME_PREFIX"
 
-		echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module"
+		smart_echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module"
 	fi
 
 	if [ "$OUTPUT_FORMAT" == '--print' ]; then
@@ -273,7 +280,7 @@ if [ "$OUTPUT_FORMAT" != '--diff' ]; then
 		git add "$(pwd)/$migration_file"
 		git commit -m "feat: added wait submodule for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
 
-		echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module"
+		smart_echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module"
 	fi
 
 	if [ "$OUTPUT_FORMAT" == '--print' ]; then
@@ -286,6 +293,6 @@ if [ "$OUTPUT_FORMAT" != '--diff' ]; then
 		git add "$(pwd)/$migration_file"
 		git commit -m "feat: set temporal rollout to 100 for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
 
-		echo "✅ [$WFC_NAME_PREFIX] Set TEMPORAL ROLLOUT to 100 for PRE_DISBURSAL module"
+		smart_echo "✅ [$WFC_NAME_PREFIX] Set TEMPORAL ROLLOUT to 100 for PRE_DISBURSAL module"
 	fi
 fi
