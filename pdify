@@ -6,14 +6,14 @@ WFC_NAME_PREFIX="default"
 
 # Input Vars
 
-if [ -z "$1" ] || [ -z "$2" ]; then
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
 	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API> [--commit|--print|--diff] [--silent]"
 	exit 1
 fi
 
 SOURCE_INFO_REDASH_QUERY_API="$1"
 WORKFLOW_LIST_REDASH_QUERY_API="$2"
-OUTPUT_FORMAT="${3:---commit}"
+OUTPUT_FORMAT="${3}"
 SILENT="${4:-}"
 
 pd_workflow_config() {
