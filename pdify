@@ -7,7 +7,7 @@ WFC_NAME_PREFIX="default"
 # Input Vars
 
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
-	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API> [--commit|--print|--diff] [--silent]"
+	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API> [--commit|--print|--diff|--backup] [--silent]"
 	exit 1
 fi
 
@@ -222,6 +222,8 @@ while IFS= read -r row; do
 
 		if [ "$OUTPUT_FORMAT" == '--print' ]; then
 			insert_pre_disbursal_module_sql "$workflow_id" "$workflow_data_with_pd_module" "$workflow_name"
+		elif [ "$OUTPUT_FORMAT" == '--backup' ]; then
+			insert_pre_disbursal_module_sql "$workflow_id" "$workflow_data" "$workflow_name"
 		elif [ "$OUTPUT_FORMAT" == '--diff' ]; then
 			echo "=== ∂ workflow_name: '$workflow_name' | workflow_id: '$workflow_id' ∂ ==="
 			echo "$workflow_data_diff"
@@ -239,7 +241,7 @@ while IFS= read -r row; do
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
-if [ "$OUTPUT_FORMAT" != '--diff' ]; then
+if [ "$OUTPUT_FORMAT" == '--commit' ] || [ "$OUTPUT_FORMAT" == "--print" ]; then
 	if ! call_redash "$SOURCE_INFO_REDASH_QUERY_API" JSON_DATA; then
 		exit 1
 	fi
