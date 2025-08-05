@@ -7,13 +7,13 @@ WFC_NAME_PREFIX="default"
 # Input Vars
 
 if [ -z "$1" ] || [ -z "$2" ]; then
-	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API>"
+	echo "Usage: $0 <SOURCE_INFO_REDASH_QUERY_API> <WORKFLOW_LIST_REDASH_QUERY_API>" "[--commit|--print|--diff]"
 	exit 1
 fi
 
 SOURCE_INFO_REDASH_QUERY_API="$1"
 WORKFLOW_LIST_REDASH_QUERY_API="$2"
-PRINT_ONLY="$3"
+OUTPUT_FORMAT="${3:---commit}"
 
 pd_workflow_config() {
 	local source_entity_id="$1"
@@ -206,14 +206,19 @@ while IFS= read -r row; do
 		WFC_NAME_PREFIX=$(echo "$workflow_name" | cut -d'_' -f1)
 
 		workflow_data_with_pd_module=$(insert_pre_disbursal_module_jq "$workflow_data")
-		if [ "$workflow_data_with_pd_module" == "$workflow_data" ]; then
+
+		workflow_data_diff=$(diff --color=always -u <(echo "$workflow_data") <(echo "$workflow_data_with_pd_module"))
+		if [ "$workflow_data_diff" == "" ]; then
 			echo "⏭️  Skipping $workflow_name — already has PRE_DISBURSAL module or has no ESIGN module"
 			continue
 		fi
 
-		if [ "$PRINT_ONLY" == '--print' ]; then
+		if [ "$OUTPUT_FORMAT" == '--print' ]; then
 			insert_pre_disbursal_module_sql "$workflow_id" "$workflow_data_with_pd_module" "$workflow_name"
-		else
+		elif [ "$OUTPUT_FORMAT" == '--diff' ]; then
+			echo "=== ∂ workflow_name: '$workflow_name' | workflow_id: '$workflow_id' ∂ ==="
+			echo "$workflow_data_diff"
+		elif [ "$OUTPUT_FORMAT" == '--commit' ]; then
 			go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_module_in_${workflow_name}" 2>&1)
 			migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 
@@ -227,58 +232,60 @@ while IFS= read -r row; do
 	fi
 done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
-if ! call_redash "$SOURCE_INFO_REDASH_QUERY_API" JSON_DATA; then
-	exit 1
-fi
-# Fetch source_entity_id
-source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
-echo "📥 RECEIVED > source_entity_id: $source_entity_id"
-# Fetch organization_id and program_name for the source_entity_id
-while IFS= read -r row; do
-	if [ -n "$row" ]; then
-		organization_id=$(echo "$row" | jq -r '.organization_id')
-		program_name=$(echo "$row" | jq -r '.program_name')
-
-		echo "📥 RECEIVED > organization_id: $organization_id"
-		echo "📥 RECEIVED > program_name: $program_name"
+if [ "$OUTPUT_FORMAT" != '--diff' ]; then
+	if ! call_redash "$SOURCE_INFO_REDASH_QUERY_API" JSON_DATA; then
+		exit 1
 	fi
-done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
+	# Fetch source_entity_id
+	source_entity_id=$(echo "$JSON_DATA" | jq .query_result.query | cut -d"'" -f2)
+	echo "📥 RECEIVED > source_entity_id: $source_entity_id"
+	# Fetch organization_id and program_name for the source_entity_id
+	while IFS= read -r row; do
+		if [ -n "$row" ]; then
+			organization_id=$(echo "$row" | jq -r '.organization_id')
+			program_name=$(echo "$row" | jq -r '.program_name')
 
-if [ "$PRINT_ONLY" == '--print' ]; then
-	pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}"
-else
-	go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_workflow_config_${WFC_NAME_PREFIX}" 2>&1)
-	migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+			echo "📥 RECEIVED > organization_id: $organization_id"
+			echo "📥 RECEIVED > program_name: $program_name"
+		fi
+	done < <(echo "$JSON_DATA" | jq -c '.query_result.data.rows[]')
 
-	pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}" >"$(pwd)/$migration_file"
-	git add "$(pwd)/$migration_file"
-	git commit -m "feat: added PRE_DISBURSAL workflow config for $WFC_NAME_PREFIX"
+	if [ "$OUTPUT_FORMAT" == '--print' ]; then
+		pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}"
+	elif [ "$OUTPUT_FORMAT" == '--commit' ]; then
+		go_migration_output=$(go run cmd/sql/generate.go "-table=add_pre_disbursal_workflow_config_${WFC_NAME_PREFIX}" 2>&1)
+		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 
-	echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module"
-fi
+		pd_workflow_config "$source_entity_id" "$organization_id" "$program_name" "${4:-}" >"$(pwd)/$migration_file"
+		git add "$(pwd)/$migration_file"
+		git commit -m "feat: added PRE_DISBURSAL workflow config for $WFC_NAME_PREFIX"
 
-if [ "$PRINT_ONLY" == '--print' ]; then
-	pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name"
-else
-	go_migration_output=$(go run cmd/sql/generate.go "-table=add_wait_submodule_config_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
-	migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+		echo "✅ [$WFC_NAME_PREFIX] Added workflow config for PRE_DISBURSAL module"
+	fi
 
-	pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name" >"$(pwd)/$migration_file"
-	git add "$(pwd)/$migration_file"
-	git commit -m "feat: added wait submodule for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
+	if [ "$OUTPUT_FORMAT" == '--print' ]; then
+		pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name"
+	elif [ "$OUTPUT_FORMAT" == '--commit' ]; then
+		go_migration_output=$(go run cmd/sql/generate.go "-table=add_wait_submodule_config_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
+		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 
-	echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module"
-fi
+		pd_wait_section_config "$source_entity_id" "$organization_id" "$program_name" >"$(pwd)/$migration_file"
+		git add "$(pwd)/$migration_file"
+		git commit -m "feat: added wait submodule for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
 
-if [ "$PRINT_ONLY" == '--print' ]; then
-	pd_temporal_rollout_100 "$source_entity_id"
-else
-	go_migration_output=$(go run cmd/sql/generate.go "-table=set_temporal_rollout_to_100_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
-	migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
+		echo "✅ [$WFC_NAME_PREFIX] Added WAIT submodule section config for PRE_DISBURSAL module"
+	fi
 
-	pd_temporal_rollout_100 "$source_entity_id" >"$(pwd)/$migration_file"
-	git add "$(pwd)/$migration_file"
-	git commit -m "feat: set temporal rollout to 100 for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
+	if [ "$OUTPUT_FORMAT" == '--print' ]; then
+		pd_temporal_rollout_100 "$source_entity_id"
+	elif [ "$OUTPUT_FORMAT" == '--commit' ]; then
+		go_migration_output=$(go run cmd/sql/generate.go "-table=set_temporal_rollout_to_100_for_pre_disbursal_module_${WFC_NAME_PREFIX}" 2>&1)
+		migration_file=$(echo "$go_migration_output" | gawk '{print $6}')
 
-	echo "✅ [$WFC_NAME_PREFIX] Set TEMPORAL ROLLOUT to 100 for PRE_DISBURSAL module"
+		pd_temporal_rollout_100 "$source_entity_id" >"$(pwd)/$migration_file"
+		git add "$(pwd)/$migration_file"
+		git commit -m "feat: set temporal rollout to 100 for PRE_DISBURSAL module for $WFC_NAME_PREFIX"
+
+		echo "✅ [$WFC_NAME_PREFIX] Set TEMPORAL ROLLOUT to 100 for PRE_DISBURSAL module"
+	fi
 fi
