@@ -41,9 +41,16 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   function db_contexify(s) {
-    gsub(/database\.Get\(/, "database.GetContext(ctx, ", s)
-    gsub(/database\.Exec\(/, "database.ExecContext(ctx, ", s)
-    gsub(/database\.Select\(/, "database.SelectContext(ctx, ", s)
+    methods[0] = "Get"
+    methods[1] = "Exec"
+    methods[2] = "Select"
+    methods[3] = "NamedExec"
+
+    for (i in methods) {
+      gsub("database\\." methods[i] "\\(", "database." methods[i] "Context(ctx, ", s)
+      gsub("tx\\." methods[i] "\\(", "tx." methods[i] "Context(ctx, ", s)
+    }
+
     return s
   }
 
