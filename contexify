@@ -4,10 +4,9 @@ set -e
 
 FUNC_NAME="$1"
 FILE_PATH="$2"
-DUPLICATE="$3" # pass "--duplicate" as third arg to duplicate
 
 if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
-	echo "Usage: $0 <function_name> <file_path> [--duplicate]"
+	echo "Usage: $0 <function_name> <file_path>"
 	exit 1
 fi
 
@@ -28,6 +27,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     gsub(/\<logger.Log\./, "logger.WithContextV3(ctx, nil).", s)
     gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
     gsub(/logger\.WithWorkflow\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    gsub(/logger\.WithSourceEntity\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
     gsub(/logger\.WithLoanApplication\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
     return s
   }
@@ -61,9 +61,9 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   function function_contexify(s) {
-    gsub(/IsSourceAgg\(/, "IsSourceAggWithContext(ctx, ", s)
-    gsub(/GetEMIDateThreshold\(/, "GetEMIDateThresholdWithContext(ctx, ", s)
-    gsub(/IsTopUpJourney\(/, "IsTopUpJourneyWithContext(ctx, ", s)
+    gsub(/IsSourceAgg\(/, "IsSourceAgg(ctx, ", s)
+    gsub(/GetEMIDateThreshold\(/, "GetEMIDateThreshold(ctx, ", s)
+    gsub(/IsTopUpJourney\(/, "IsTopUpJourney(ctx, ", s)
     return s
   }
 
@@ -73,7 +73,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     s = v3sentrify(s)
     s = db_contexify(s)
     s = redis_contexify(s)
-    s = function_contexify(s)
+    # s = function_contexify(s)
     return s
   }
 
@@ -81,10 +81,6 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     if (sig_line ~ /ctx[[:space:]]+context\.Context/) return sig_line
     if (sig_line ~ /\([[:space:]]*\)/) return gensub(/\([[:space:]]*\)/, "(ctx context.Context)", 1, sig_line)
     return gensub(/\(([^)]*)\)/, "(ctx context.Context, \\1)", 1, sig_line)
-  }
-
-  function modify_function_name(sig_line) {
-    return gensub("func[[:space:]]+" FUNC_NAME, "func " FUNC_NAME "WithContext", 1, sig_line)
   }
 
   {
@@ -122,29 +118,15 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
       if (brace_count == 0) {
         in_func = 0
 
-        # Duplicate mode
-        if (DUPLICATE == "--duplicate") {
-          print func_buffer
+        # Modify original function
+        split(func_buffer, lines, "\n")
+        lines[1] = inject_ctx_param(lines[1])
 
-          # Inject ctx param in signature
-          split(func_buffer, lines, "\n")
-          lines[1] = inject_ctx_param(lines[1])
-          lines[1] = modify_function_name(lines[1])
+        mod_buf = lines[1]
+        for (i = 2; i <= length(lines)-1; i++) mod_buf = mod_buf "\n" lines[i]
 
-          dup_buf = lines[1]
-          for (i = 2; i <= length(lines)-1; i++) dup_buf = dup_buf "\n" lines[i]
+        print apply_all_transformations(mod_buf)
 
-          print apply_all_transformations(dup_buf)
-        } else {
-          # Modify original function
-          split(func_buffer, lines, "\n")
-          lines[1] = inject_ctx_param(lines[1])
-
-          mod_buf = lines[1]
-          for (i = 2; i <= length(lines)-1; i++) mod_buf = mod_buf "\n" lines[i]
-
-          print apply_all_transformations(mod_buf)
-        }
         next
       }
       next
