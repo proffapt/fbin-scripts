@@ -94,7 +94,7 @@ ESCAPED_SECTION_DATA=$(printf '%s' "$SECTION_DATA" | escape_single_quotes)
 
 # Generate SQL
 echo
-if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" == "" ]; then
+if [ "${DEACTIVATE_ID:-}" != "skip" ] && [ "${DEACTIVATE_ID:-}" != "" ]; then
 	cat <<EOF
 -- Deactivate previous version:
 UPDATE section_config
