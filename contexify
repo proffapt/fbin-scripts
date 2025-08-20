@@ -56,9 +56,14 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
 
   function redis_contexify(s) {
     gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,", s)
-    gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,", s)
-    gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,", s)
     gsub(/redis\.Set\(/, "redis.Set(ctx, ", s)
+    gsub(/redis\.Get\(/, "redis.Get(ctx, ", s)
+    return s
+  }
+
+  function correct_contexify(s) {
+    gsub(/\<context\.TODO\(\)/, "ctx", s)
+    gsub(/\<context\.Background\(\)/, "ctx", s)
     return s
   }
 
@@ -76,6 +81,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
 
   function apply_all_transformations(s) {
     s = replace_interface_with_any(s)
+    s = correct_contexify(s)
     # s = v3loggify(s)
     # s = v3sentrify(s)
     s = db_contexify(s)
