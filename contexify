@@ -138,14 +138,19 @@ rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
 	while read -r file; do
 		FILE_PKG=$(awk '/^package / {print $2; exit}' "$file")
 
+		before=$(cksum "$file")
+
 		if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
 			# Unqualified calls
 			perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
-			echo "✅ Contexified $FUNC_NAME references in $file"
 		else
 			# Qualified calls
 			perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
-			echo "✅ Contexified ${SOURCE_PKG_NAME}.${FUNC_NAME} references in $file"
+		fi
+
+		after=$(cksum "$file")
+		if [ "$before" != "$after" ]; then
+			echo "✅ Contexified $FUNC_NAME references in $file"
 		fi
 
 	done
