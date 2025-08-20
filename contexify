@@ -170,3 +170,6 @@ rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
 		fi
 
 	done
+
+goimports -w .
+echo "✅ Fixed imports across the project"
