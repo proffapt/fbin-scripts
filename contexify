@@ -58,7 +58,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,", s)
     gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,", s)
     gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,", s)
-    gsub(/redis\.Set\(/, "redis.SetWithContext(ctx, ", s)
+    gsub(/redis\.Set\(/, "redis.Set(ctx, ", s)
     return s
   }
 
