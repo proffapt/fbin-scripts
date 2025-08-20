@@ -56,9 +56,8 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   function redis_contexify(s) {
-    # Only add ctx if missing
-    if (s ~ /redis\.Set\(/ && s !~ /redis\.Set\(ctx,/) { gsub(/redis\.Set\(/, "redis.Set(ctx, ", s) }
-    if (s ~ /redis\.Get\(/ && s !~ /redis\.Get\(ctx,/) { gsub(/redis\.Get\(/, "redis.Get(ctx, ", s) }
+    s = add_ctx_if_missing(s, "redis.Set")
+    s = add_ctx_if_missing(s, "redis.Get")
     return s
   }
 
@@ -79,8 +78,18 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
 
     s = redis_contexify(s)
     s = db_contexify(s)
-    # s = v3loggify(s)
     # s = v3sentrify(s)
+    # s = v3loggify(s)
+    return s
+  }
+
+  # Utility: add ctx only if missing
+  function add_ctx_if_missing(s, func_name) {
+    pattern = func_name "\\("
+    ctx_pattern = func_name "\\(ctx,"
+    if (s ~ pattern && s !~ ctx_pattern) {
+      gsub(pattern, func_name "(ctx, ", s)
+    }
     return s
   }
 
