@@ -60,7 +60,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     return s
   }
 
-  function correct_contexify(s) {
+  function replace_todo_background_with_ctx(s) {
     gsub(/\<context\.TODO\(\)/, "ctx", s)
     gsub(/\<context\.Background\(\)/, "ctx", s)
     return s
@@ -76,7 +76,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     # s = redis_contexify(s)
     # s = v3loggify(s)
     # s = v3sentrify(s)
-    s = correct_contexify(s)
+    s = replace_todo_background_with_ctx(s)
     s = replace_interface_with_any(s)
     return s
   }
