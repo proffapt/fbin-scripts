@@ -56,8 +56,9 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
 
   function redis_contexify(s) {
     gsub(/rdb\.Set\(context\.Background\(\),/, "rdb.Set(ctx,", s)
+    gsub(/redis\.Get\(context\.TODO\(\),/, "redis.Get(ctx,", s)
+    gsub(/redis\.Get\(context\.Background\(\),/, "redis.Get(ctx,", s)
     gsub(/redis\.Set\(/, "redis.Set(ctx, ", s)
-    gsub(/redis\.Get\(/, "redis.Get(ctx, ", s)
     return s
   }
 
