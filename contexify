@@ -88,18 +88,6 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   {
-    # Handle imports
-    if ($0 ~ /^import[[:space:]]*\(/) in_import = 1
-
-    if (in_import && $0 ~ /"context"/) need_context = 0
-    if (in_import && $0 ~ /"finbox\/go-api\/functions\/logger"/) need_logger = 0
-
-    if (in_import && $0 ~ /^\)/) {
-      if (need_context) print "\t\"context\""
-      if (need_logger) print "\t\"finbox/go-api/functions/logger\""
-      in_import = 0
-    }
-
     # Before function: print as is
     if (NR < start) {
       print
