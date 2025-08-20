@@ -71,19 +71,11 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
     return s
   }
 
-  function function_contexify(s) {
-    gsub(/IsSourceAgg\(/, "IsSourceAgg(ctx, ", s)
-    gsub(/GetEMIDateThreshold\(/, "GetEMIDateThreshold(ctx, ", s)
-    gsub(/IsTopUpJourney\(/, "IsTopUpJourney(ctx, ", s)
-    return s
-  }
-
   function apply_all_transformations(s) {
     s = db_contexify(s)
     # s = redis_contexify(s)
     # s = v3loggify(s)
     # s = v3sentrify(s)
-    # s = function_contexify(s)
     s = correct_contexify(s)
     s = replace_interface_with_any(s)
     return s
