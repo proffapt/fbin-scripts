@@ -129,8 +129,10 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 ' "$FILE_PATH" >"$TMP_FILE"
 
-mv "$TMP_FILE" "$FILE_PATH"
-echo "✅ Contexified $FUNC_NAME definition"
+if ! diff -q "$TMP_FILE" "$FILE_PATH" >/dev/null 2>&1; then
+	mv "$TMP_FILE" "$FILE_PATH"
+	echo "✅ Contexified $FUNC_NAME definition"
+fi
 
 rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
 	while read -r file; do
