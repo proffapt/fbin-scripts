@@ -56,7 +56,9 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   function redis_contexify(s) {
-    gsub(/redis\.Set\((?!ctx,)/, "redis.Set(ctx, ", s)
+    # Only add ctx if missing
+    if (s ~ /redis\.Set\(/ && s !~ /redis\.Set\(ctx,/) { gsub(/redis\.Set\(/, "redis.Set(ctx, ", s) }
+    if (s ~ /redis\.Get\(/ && s !~ /redis\.Get\(ctx,/) { gsub(/redis\.Get\(/, "redis.Get(ctx, ", s) }
     return s
   }
 
