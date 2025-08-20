@@ -147,10 +147,10 @@ rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
 			# Qualified calls
 			perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
 		fi
-		goimports -w "$file"
 
 		after=$(cksum "$file")
 		if [ "$before" != "$after" ]; then
+			goimports -w "$file"
 			echo "✅ Contexified $FUNC_NAME references in $file"
 		fi
 
