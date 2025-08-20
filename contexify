@@ -3,7 +3,8 @@
 set -e
 
 FUNC_NAME="$1"
-FILE_PATH="$2"
+SOURCE_PKG_NAME="$2"
+FILE_PATH="$3"
 
 if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
 	echo "Usage: $0 <function_name> <file_path>"
@@ -152,4 +153,19 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
 ' "$FILE_PATH" >"$TMP_FILE"
 
 mv "$TMP_FILE" "$FILE_PATH"
-echo "✅ Updated: $FILE_PATH"
+echo "✅ Contexified $FUNC_NAME definition"
+
+rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
+	while read -r file; do
+		FILE_PKG=$(awk '/^package / {print $2; exit}' "$file")
+
+		if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
+			# Unqualified calls
+			perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
+		else
+			# Qualified calls
+			perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
+		fi
+
+		echo "✅ Contexified $FUNC_NAME references"
+	done
