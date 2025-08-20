@@ -162,10 +162,11 @@ rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
 		if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
 			# Unqualified calls
 			perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
+			echo "✅ Contexified $FUNC_NAME references"
 		else
 			# Qualified calls
 			perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
+			echo "✅ Contexified ${SOURCE_PKG_NAME}.${FUNC_NAME} references"
 		fi
 
-		echo "✅ Contexified $FUNC_NAME references"
 	done
