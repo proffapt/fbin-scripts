@@ -94,6 +94,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" -v DUPLICATE="$DUPLICATE" '
   }
 
   function inject_ctx_param(sig_line) {
+    if (sig_line ~ /Cont\(/) return sig_line
     if (sig_line ~ /ctx[[:space:]]+context\.Context/) return sig_line
     if (sig_line ~ /\([[:space:]]*\)/) return gensub(/\([[:space:]]*\)/, "(ctx context.Context)", 1, sig_line)
     return gensub(/\(([^)]*)\)/, "(ctx context.Context, \\1)", 1, sig_line)
@@ -147,24 +148,26 @@ if ! diff -q "$TMP_FILE" "$FILE_PATH" >/dev/null 2>&1; then
 	echo "✅ Contexified $FUNC_NAME definition"
 fi
 
-rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
-	while read -r file; do
-		FILE_PKG=$(awk '/^package / {print $2; exit}' "$file")
+if [[ "$FUNC_NAME" != *Cont ]]; then
+	rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
+		while read -r file; do
+			FILE_PKG=$(awk '/^package / {print $2; exit}' "$file")
 
-		before=$(cksum "$file")
+			before=$(cksum "$file")
 
-		if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
-			# Unqualified calls
-			perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
-		else
-			# Qualified calls
-			perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
-		fi
+			if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
+				# Unqualified calls
+				perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
+			else
+				# Qualified calls
+				perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
+			fi
 
-		after=$(cksum "$file")
-		if [ "$before" != "$after" ]; then
-			goimports -w "$file"
-			echo "✅ Contexified $FUNC_NAME references in $file"
-		fi
+			after=$(cksum "$file")
+			if [ "$before" != "$after" ]; then
+				goimports -w "$file"
+				echo "✅ Contexified $FUNC_NAME references in $file"
+			fi
 
-	done
+		done
+fi
