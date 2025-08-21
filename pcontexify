@@ -84,4 +84,7 @@ done <"$TMP_FILE"
 
 rm -f "$TMP_FILE"
 
+# Delete any dangling backup file
+find . -type f -name "*.bak" -print -delete
+
 success "Processing complete."
