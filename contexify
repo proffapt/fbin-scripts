@@ -155,7 +155,7 @@ if [[ "$FUNC_NAME" != *Cont ]]; then
 			before=$(cksum "$file")
 
 			if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
-				perl -pi -e "s/(?<!\bfunc)(?<!\))(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
+				perl -pi -e "s/^(?!\s*func\b).*?(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
 			else
 				perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
 			fi
