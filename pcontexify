@@ -63,6 +63,11 @@ if [[ ! -s "$TMP_FILE" ]]; then
 fi
 
 touch "$PROGRESS_FILE"
+
+TOTAL=$(wc -l <"$TMP_FILE" | tr -d ' ')
+PROCESSED=$(wc -l <"$PROGRESS_FILE" | tr -d ' ')
+log "Total occurrences: $TOTAL | Already processed: $PROCESSED"
+
 while IFS=: read -r file line content; do
 	match=$(echo "$content" | grep -oE "$PATTERN")
 	[[ -z "$match" ]] && continue
@@ -71,11 +76,11 @@ while IFS=: read -r file line content; do
 
 	# Skip if already done
 	if grep -Fxq "$key" "$PROGRESS_FILE"; then
-		log "Skipping already processed $key"
 		continue
 	fi
 
-	log "Processing $file:$line → found '$match'"
+	PROCESSED=$((PROCESSED + 1))
+	log "[$PROCESSED / $TOTAL] Processing $file:$line → found '$match'"
 
 	# Try ctx first
 	sed -i.bak "${line}s/$match/ctx/" "$file"
@@ -99,7 +104,6 @@ while IFS=: read -r file line content; do
 	# Restore original if both failed
 	mv "$file.bak" "$file"
 	error "Both replacements failed for $file:$line, kept original."
-	# Mark as done so it won’t retry forever
 	echo "$key" >>"$PROGRESS_FILE"
 done <"$TMP_FILE"
 
