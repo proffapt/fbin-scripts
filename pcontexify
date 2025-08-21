@@ -1,0 +1,56 @@
+#!/bin/bash
+set -euo pipefail
+
+GREEN=$(tput setaf 2)
+RED=$(tput setaf 1)
+YELLOW=$(tput setaf 3)
+RESET=$(tput sgr0)
+
+log() { echo -e "${YELLOW}[INFO]${RESET} $*"; }
+success() { echo -e "${GREEN}[SUCCESS]${RESET} $*"; }
+error() { echo -e "${RED}[ERROR]${RESET} $*"; }
+
+PROJECT_DIR=$(pwd)
+TMP_FILE=$(mktemp)
+
+log "Scanning for context.TODO() and context.Background() in $PROJECT_DIR"
+
+# Find all occurrences with file + line number
+grep -rn --include="*.go" -E 'context\.(TODO|Background)\(\)' "$PROJECT_DIR" >"$TMP_FILE" || true
+
+if [[ ! -s "$TMP_FILE" ]]; then
+	log "No occurrences found."
+	exit 0
+fi
+
+while IFS=: read -r file line content; do
+	pattern=$(echo "$content" | grep -oE 'context\.(TODO|Background)\(\)')
+	[[ -z "$pattern" ]] && continue
+
+	log "Processing $file:$line → found '$pattern'"
+
+	# Try ctx first
+	sed -i.bak "${line}s/$pattern/ctx/" "$file"
+	if go build ./... >/dev/null 2>&1; then
+		success "Replaced with ctx in $file:$line"
+		rm -f "$file.bak"
+		continue
+	fi
+
+	# Restore and try r.Context()
+	mv "$file.bak" "$file"
+	sed -i.bak "${line}s/$pattern/r.Context()/" "$file"
+	if go build ./... >/dev/null 2>&1; then
+		success "Replaced with r.Context() in $file:$line"
+		rm -f "$file.bak"
+		continue
+	fi
+
+	# Restore original if both failed
+	mv "$file.bak" "$file"
+	error "Both replacements failed for $file:$line, kept original."
+done <"$TMP_FILE"
+
+rm -f "$TMP_FILE"
+
+success "Processing complete."
