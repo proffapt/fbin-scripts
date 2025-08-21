@@ -80,12 +80,13 @@ while IFS=: read -r file line content; do
 	fi
 
 	PROCESSED=$((PROCESSED + 1))
-	log "[$PROCESSED / $TOTAL] Processing $file:$line → found '$match'"
+	REL_PATH=$(grealpath --relative-to="$PROJECT_DIR" "$file")
+	log "[$PROCESSED / $TOTAL] Processing '$REL_PATH:$line'"
 
 	# Try ctx first
 	sed -i.bak "${line}s/$match/ctx/" "$file"
 	if go build ./... >/dev/null 2>&1; then
-		success "Replaced with ctx in $file:$line"
+		success "{${match}} → {ctx}"
 		rm -f "$file.bak"
 		echo "$key" >>"$PROGRESS_FILE"
 		continue
@@ -95,7 +96,7 @@ while IFS=: read -r file line content; do
 	mv "$file.bak" "$file"
 	sed -i.bak "${line}s/$match/r.Context()/" "$file"
 	if go build ./... >/dev/null 2>&1; then
-		success "Replaced with r.Context() in $file:$line"
+		success "{${match}} → {r.Context()}"
 		rm -f "$file.bak"
 		echo "$key" >>"$PROGRESS_FILE"
 		continue
@@ -103,8 +104,8 @@ while IFS=: read -r file line content; do
 
 	# Restore original if both failed
 	mv "$file.bak" "$file"
-	error "Both replacements failed for $file:$line, kept original."
+	error "Kept {${match}"
 	echo "$key" >>"$PROGRESS_FILE"
 done <"$TMP_FILE"
 
-success "Processing complete. Progress stored in $PROGRESS_FILE"
+success "Processing complete. Progress stored in $($PROGRESS_FILE)"
