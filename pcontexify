@@ -12,6 +12,14 @@ error() { echo -e "${RED}[ERROR]${RESET} $*"; }
 
 PROJECT_DIR=$(pwd)
 TMP_FILE=$(mktemp)
+PROGRESS_FILE="$PROJECT_DIR/.context_replacements_progress"
+
+# Cleanup function (runs on exit or Ctrl+C)
+cleanup() {
+	rm -f "$TMP_FILE"
+	find "$PROJECT_DIR" -type f -name "*.bak" -delete
+}
+trap cleanup EXIT INT
 
 # Flags
 DO_TODO=false
@@ -54,9 +62,18 @@ if [[ ! -s "$TMP_FILE" ]]; then
 	exit 0
 fi
 
+touch "$PROGRESS_FILE"
 while IFS=: read -r file line content; do
 	match=$(echo "$content" | grep -oE "$PATTERN")
 	[[ -z "$match" ]] && continue
+
+	key="$file:$line:$match"
+
+	# Skip if already done
+	if grep -Fxq "$key" "$PROGRESS_FILE"; then
+		log "Skipping already processed $key"
+		continue
+	fi
 
 	log "Processing $file:$line → found '$match'"
 
@@ -65,6 +82,7 @@ while IFS=: read -r file line content; do
 	if go build ./... >/dev/null 2>&1; then
 		success "Replaced with ctx in $file:$line"
 		rm -f "$file.bak"
+		echo "$key" >>"$PROGRESS_FILE"
 		continue
 	fi
 
@@ -74,17 +92,15 @@ while IFS=: read -r file line content; do
 	if go build ./... >/dev/null 2>&1; then
 		success "Replaced with r.Context() in $file:$line"
 		rm -f "$file.bak"
+		echo "$key" >>"$PROGRESS_FILE"
 		continue
 	fi
 
 	# Restore original if both failed
 	mv "$file.bak" "$file"
 	error "Both replacements failed for $file:$line, kept original."
+	# Mark as done so it won’t retry forever
+	echo "$key" >>"$PROGRESS_FILE"
 done <"$TMP_FILE"
 
-rm -f "$TMP_FILE"
-
-# Delete any dangling backup file
-find . -type f -name "*.bak" -print -delete
-
-success "Processing complete."
+success "Processing complete. Progress stored in $PROGRESS_FILE"
