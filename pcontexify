@@ -12,7 +12,7 @@ error() { echo -e "${RED}[ERROR]${RESET} $*"; }
 
 PROJECT_DIR=$(pwd)
 TMP_FILE=$(mktemp)
-PROGRESS_FILE="$PROJECT_DIR/.context_replacements_progress"
+PROGRESS_FILE="/tmp/.context_replacements_progress"
 
 # Cleanup function (runs on exit or Ctrl+C)
 cleanup() {
