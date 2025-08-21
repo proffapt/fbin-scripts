@@ -3,18 +3,16 @@
 set -e
 
 FUNC_NAME="$1"
-SOURCE_PKG_NAME="$2"
-FILE_PATH="$3"
+LINE_NO="$2"
+SOURCE_PKG_NAME="$3"
+FILE_PATH="$4"
 
 if [ -z "$FUNC_NAME" ] || [ -z "$FILE_PATH" ]; then
-	echo "Usage: $0 <function_name> <file_path>"
+	echo "Usage: $0 <function_name> <line_no> <source_pkg_name> <file_path>"
 	exit 1
 fi
 
 TMP_FILE=$(mktemp)
-LINE_NO=$(ggrep -nE "^[[:space:]]*func[[:space:]]+.*${FUNC_NAME}[[:space:]]*\(" "$FILE_PATH" | cut -d: -f1)
-echo "$LINE_NO"
-
 gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
   BEGIN {
     need_context = 1
