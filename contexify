@@ -7,7 +7,7 @@ LINE_NO="$2"
 SOURCE_PKG_NAME="$3"
 FILE_PATH="$4"
 
-if [ -z "$FUNC_NAME" ] || [ -z "$LINE_NO" ] || [ -z "$FILE_PATH" ]; then
+if [ -z "$FUNC_NAME" ] || [ -z "$LINE_NO" ] || [ -z "$SOURCE_PKG_NAME" ] || [ -z "$FILE_PATH" ]; then
 	echo "Usage: $0 <function_name> <line_no> <source_pkg_name> <file_path>"
 	exit 1
 fi
