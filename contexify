@@ -157,7 +157,7 @@ if [[ "$FUNC_NAME" != *Cont ]]; then
 
 			if [[ "$FILE_PKG" == "$SOURCE_PKG_NAME" ]]; then
 				# Unqualified calls
-				perl -pi -e "s/(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
+				perl -pi -e "s/(?<!\bfunc)(?<!\))(?<!\.)\b${FUNC_NAME}\((?!\s*(ctx|context))/${FUNC_NAME}(context.TODO(), /g" "$file"
 			else
 				# Qualified calls
 				perl -pi -e "s/\b${SOURCE_PKG_NAME}\.${FUNC_NAME}\((?!\s*(ctx|context))/${SOURCE_PKG_NAME}.${FUNC_NAME}(context.TODO(), /g" "$file"
