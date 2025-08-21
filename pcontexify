@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 GREEN=$(tput setaf 2)
@@ -13,24 +13,55 @@ error() { echo -e "${RED}[ERROR]${RESET} $*"; }
 PROJECT_DIR=$(pwd)
 TMP_FILE=$(mktemp)
 
-log "Scanning for context.TODO() and context.Background() in $PROJECT_DIR"
+# Flags
+DO_TODO=false
+DO_BACKGROUND=false
 
-# Find all occurrences with file + line number
-grep -rn --include="*.go" -E 'context\.(TODO|Background)\(\)' "$PROJECT_DIR" >"$TMP_FILE" || true
+# Parse args
+for arg in "$@"; do
+	case "$arg" in
+	--todo) DO_TODO=true ;;
+	--background) DO_BACKGROUND=true ;;
+	*)
+		echo "Usage: $0 [--todo] [--background]"
+		exit 1
+		;;
+	esac
+done
+
+if ! $DO_TODO && ! $DO_BACKGROUND; then
+	echo "Usage: $0 [--todo] [--background]"
+	exit 1
+fi
+
+log "Scanning project: $PROJECT_DIR"
+
+# Build regex depending on args
+PATTERN=""
+if $DO_TODO && $DO_BACKGROUND; then
+	PATTERN='context\.(TODO|Background)\(\)'
+elif $DO_TODO; then
+	PATTERN='context\.TODO\(\)'
+elif $DO_BACKGROUND; then
+	PATTERN='context\.Background\(\)'
+fi
+
+# Find occurrences
+grep -rn --include="*.go" -E "$PATTERN" "$PROJECT_DIR" >"$TMP_FILE" || true
 
 if [[ ! -s "$TMP_FILE" ]]; then
-	log "No occurrences found."
+	log "No occurrences found for pattern: $PATTERN"
 	exit 0
 fi
 
 while IFS=: read -r file line content; do
-	pattern=$(echo "$content" | grep -oE 'context\.(TODO|Background)\(\)')
-	[[ -z "$pattern" ]] && continue
+	match=$(echo "$content" | grep -oE "$PATTERN")
+	[[ -z "$match" ]] && continue
 
-	log "Processing $file:$line → found '$pattern'"
+	log "Processing $file:$line → found '$match'"
 
 	# Try ctx first
-	sed -i.bak "${line}s/$pattern/ctx/" "$file"
+	sed -i.bak "${line}s/$match/ctx/" "$file"
 	if go build ./... >/dev/null 2>&1; then
 		success "Replaced with ctx in $file:$line"
 		rm -f "$file.bak"
@@ -39,7 +70,7 @@ while IFS=: read -r file line content; do
 
 	# Restore and try r.Context()
 	mv "$file.bak" "$file"
-	sed -i.bak "${line}s/$pattern/r.Context()/" "$file"
+	sed -i.bak "${line}s/$match/r.Context()/" "$file"
 	if go build ./... >/dev/null 2>&1; then
 		success "Replaced with r.Context() in $file:$line"
 		rm -f "$file.bak"
