@@ -16,7 +16,13 @@ PROGRESS_FILE="/tmp/.context_replacements_progress"
 
 # Cleanup function (runs on exit or Ctrl+C)
 cleanup() {
+	if [[ -n "${file:-}" && -f "$file.bak" ]]; then
+		REL_PATH=$(grealpath --relative-to="$PROJECT_DIR" "$file")
+		mv "$file.bak" "$file"
+		log "Restored '$REL_PATH:$line' due to user interruption."
+	fi
 	rm -f "$TMP_FILE"
+	# only delete stray backups that are left behind
 	find "$PROJECT_DIR" -type f -name "*.bak" -delete
 }
 trap cleanup EXIT INT
@@ -68,6 +74,8 @@ TOTAL=$(wc -l <"$TMP_FILE" | tr -d ' ')
 PROCESSED=$(wc -l <"$PROGRESS_FILE" | tr -d ' ')
 log "Total remaining occurrences: $TOTAL | Already processed: $PROCESSED"
 
+file=""
+line=""
 CURRENT_PROCESSED=0
 while IFS=: read -r file line content; do
 	match=$(echo "$content" | grep -oE "$PATTERN")
