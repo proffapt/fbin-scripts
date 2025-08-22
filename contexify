@@ -148,7 +148,7 @@ if ! diff -q "$TMP_FILE" "$FILE_PATH" >/dev/null 2>&1; then
 fi
 
 if [[ "$FUNC_NAME" != *Cont ]]; then
-	rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' |
+	rg --pcre2 -l "(?:${SOURCE_PKG_NAME}\.)?${FUNC_NAME}\(" --glob '*.go' --glob '!*_test.go' |
 		while read -r file; do
 			FILE_PKG=$(awk '/^package / {print $2; exit}' "$file")
 
