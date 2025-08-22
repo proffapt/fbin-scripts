@@ -25,18 +25,18 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
   function v3loggify(s) {
     gsub(/\<log\./, "logger.WithContextV3(ctx, nil).", s)
     gsub(/\<logger.Log\./, "logger.WithContextV3(ctx, nil).", s)
-    gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
-    gsub(/logger\.WithWorkflow\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
-    gsub(/logger\.WithSourceEntity\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
-    gsub(/logger\.WithLoanApplication\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    # gsub(/logger\.WithUser\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    # gsub(/logger\.WithWorkflow\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    # gsub(/logger\.WithSourceEntity\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
+    # gsub(/logger\.WithLoanApplication\([^)]*\)\./, "logger.WithContextV3(ctx, nil).", s)
     return s
   }
 
   function v3sentrify(s) {
     gsub(/errorHandler\.ReportToSentryWithoutRequest\([^)]*\)/,
           "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
-    gsub(/errorHandler\.ReportToSentryWithFields\([^)]*\)/,
-          "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
+    # gsub(/errorHandler\.ReportToSentryWithFields\([^)]*\)/,
+    #       "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
     return s
   }
 
@@ -77,8 +77,8 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
 
     s = redis_contexify(s)
     s = db_contexify(s)
-    # s = v3sentrify(s)
-    # s = v3loggify(s)
+    s = v3sentrify(s)
+    s = v3loggify(s)
     return s
   }
 
