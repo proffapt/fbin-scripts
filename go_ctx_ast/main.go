@@ -58,22 +58,23 @@ func RewriteContent(src string) (string, error) {
 			continue
 		}
 
-		// Detect ctx parameter
-		ctxType := detectCtxType(fn)
-		ctxAvailable := ctxType != "" // true if function param exists
+		// Detect function parameter ctx
+		fnCtxType := detectCtxType(fn)
+		fnCtxAvailable := fnCtxType != "" // true if function param exists
 
 		start := fset.Position(fn.Body.Lbrace).Line - 1
 		end := fset.Position(fn.Body.Rbrace).Line - 1
 
 		depth := 0
-		ctxDepth := -1 // -1 means ctx not declared yet
+		ctxDepth := -1 // -1 means local ctx not declared yet
+		ctxAvailable := fnCtxAvailable
+		ctxType := fnCtxType
 
 		for i := start; i <= end && i < len(lines); i++ {
 			line := lines[i]
 
 			// Update brace depth
-			depth += strings.Count(line, "{")
-			depth -= strings.Count(line, "}")
+			depth += strings.Count(line, "{") - strings.Count(line, "}")
 
 			// Detect local ctx variable
 			if ctxDepth == -1 {
@@ -87,6 +88,13 @@ func RewriteContent(src string) (string, error) {
 			// Replace context.TODO() only if ctx is available and in scope
 			if ctxAvailable && (ctxDepth == -1 || depth >= ctxDepth) {
 				lines[i] = replaceCtxInLine(line, ctxType)
+			}
+
+			// Reset local ctx availability when leaving the block
+			if ctxDepth != -1 && depth < ctxDepth {
+				ctxDepth = -1
+				ctxAvailable = fnCtxAvailable
+				ctxType = fnCtxType
 			}
 		}
 	}
