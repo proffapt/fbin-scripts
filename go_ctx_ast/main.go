@@ -11,6 +11,36 @@ import (
 	"strings"
 )
 
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: goap <file-or-directory> [file-or-directory ...]")
+		os.Exit(1)
+	}
+
+	args := os.Args[1:]
+	for _, path := range args {
+		info, err := os.Stat(path)
+		if err != nil {
+			fmt.Printf("Error accessing %s: %v\n", path, err)
+			continue
+		}
+
+		if info.IsDir() {
+			if err := RewriteDir(path); err != nil {
+				fmt.Printf("Error processing directory %s: %v\n", path, err)
+			} else {
+				fmt.Printf("Processed directory successfully: %s\n", path)
+			}
+		} else {
+			if err := RewriteFile(path); err != nil {
+				fmt.Printf("Error processing file %s: %v\n", path, err)
+			} else {
+				fmt.Printf("Processed file successfully: %s\n", path)
+			}
+		}
+	}
+}
+
 // RewriteContent parses and rewrites Go source code string, replacing context.TODO()
 // with ctx only when ctx is in scope (as a function parameter or local variable).
 func RewriteContent(src string) (string, error) {
