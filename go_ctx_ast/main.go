@@ -1,143 +1,216 @@
 package main
 
 import (
-	"bufio"
-	"flag"
 	"fmt"
-	"io/fs"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-func main() {
-	doTodo := flag.Bool("todo", false, "Replace context.TODO()")
-	doBackground := flag.Bool("background", false, "Replace context.Background()")
-	flag.Parse()
-
-	if !*doTodo && !*doBackground {
-		fmt.Println("Usage: go run main.go [--todo] [--background] <file_or_dir> [...]")
-		os.Exit(1)
+// RewriteContent parses and rewrites Go source code string, replacing context.TODO()
+// with ctx only when ctx is in scope (as a function parameter or local variable).
+func RewriteContent(src string) (string, error) {
+	fset := token.NewFileSet()
+	node, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+	if err != nil {
+		return "", err
 	}
 
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Provide at least one Go file or directory")
-		os.Exit(1)
-	}
+	lines := strings.Split(src, "\n")
 
-	for _, path := range args {
-		filepath.WalkDir(path, func(fp string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || filepath.Ext(fp) != ".go" {
-				return nil
+	for _, decl := range node.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		// Detect ctx parameter
+		ctxType := detectCtxType(fn)
+		ctxAvailable := ctxType != "" // true if function param exists
+
+		start := fset.Position(fn.Body.Lbrace).Line - 1
+		end := fset.Position(fn.Body.Rbrace).Line - 1
+
+		depth := 0
+		ctxDepth := -1 // -1 means ctx not declared yet
+
+		for i := start; i <= end && i < len(lines); i++ {
+			line := lines[i]
+
+			// Update brace depth
+			depth += strings.Count(line, "{")
+			depth -= strings.Count(line, "}")
+
+			// Detect local ctx variable
+			if ctxDepth == -1 {
+				if ok, detectedType := checkLocalCtxDeclaration(line); ok {
+					ctxDepth = depth
+					ctxAvailable = true
+					ctxType = detectedType // "ctx" or "*ctx"
+				}
 			}
-			processFile(fp, *doTodo, *doBackground)
-			return nil
-		})
+
+			// Replace context.TODO() only if ctx is available and in scope
+			if ctxAvailable && (ctxDepth == -1 || depth >= ctxDepth) {
+				lines[i] = replaceCtxInLine(line, ctxType)
+			}
+		}
 	}
-	fmt.Println("Done")
+
+	return strings.Join(lines, "\n"), nil
 }
 
-func processFile(filename string, doTodo, doBackground bool) {
-	file, err := os.Open(filename)
+// replaceCtxInLine replaces context.TODO() with ctx, skipping comments and quoted strings
+func replaceCtxInLine(line string, ctxType string) string {
+	// Skip lines that declare ctx itself
+	ctxDeclRegex := regexp.MustCompile(`\bctx\s*:=`)
+	if ctxDeclRegex.MatchString(line) {
+		return line
+	}
+
+	var result strings.Builder
+	inDoubleQuotes := false
+	inSingleQuotes := false
+	inBackticks := false
+	i := 0
+
+	for i < len(line) {
+		c := line[i]
+
+		// Check for comment start
+		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+			// Append the rest of the line as-is (comment)
+			result.WriteString(line[i:])
+			break
+		}
+
+		// Toggle quote states
+		if !inSingleQuotes && !inBackticks && c == '"' {
+			inDoubleQuotes = !inDoubleQuotes
+			result.WriteByte(c)
+			i++
+			continue
+		}
+		if !inDoubleQuotes && !inBackticks && c == '\'' {
+			inSingleQuotes = !inSingleQuotes
+			result.WriteByte(c)
+			i++
+			continue
+		}
+		if !inDoubleQuotes && !inSingleQuotes && c == '`' {
+			inBackticks = !inBackticks
+			result.WriteByte(c)
+			i++
+			continue
+		}
+
+		// Check for context.TODO() outside quotes/comments
+		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && strings.HasPrefix(line[i:], "context.TODO()") {
+			switch ctxType {
+			case "ctx":
+				result.WriteString("ctx")
+			case "*ctx":
+				result.WriteString("*ctx")
+			default:
+				result.WriteString("context.TODO()")
+			}
+			i += len("context.TODO()")
+			continue
+		}
+
+		// Normal character
+		result.WriteByte(c)
+		i++
+	}
+
+	return result.String()
+}
+
+// checkLocalCtxDeclaration returns whether the line declares a local ctx variable
+// and the type string: "ctx" or "*ctx"
+func checkLocalCtxDeclaration(line string) (bool, string) {
+	// Match lines like:
+	// ctx := context.Background()
+	// ctx := &context.Background()
+	// ctx := someOtherFunc()
+	// ctx := &someOtherFunc()
+	var ctxDeclRegex = regexp.MustCompile(`\bctx\s*:=\s*(\&)?`)
+	matches := ctxDeclRegex.FindStringSubmatch(line)
+	if len(matches) == 0 {
+		return false, ""
+	}
+
+	// If first capturing group is "&", it's a pointer
+	if matches[1] == "&" {
+		return true, "*ctx"
+	}
+	return true, "ctx"
+}
+
+// detectCtxType checks if a function has ctx param and returns its type string
+func detectCtxType(fn *ast.FuncDecl) string {
+	if fn.Type.Params == nil {
+		return ""
+	}
+	for _, param := range fn.Type.Params.List {
+		for _, name := range param.Names {
+			if name.Name == "ctx" {
+				typ := exprToString(param.Type)
+				if typ == "context.Context" {
+					return "ctx"
+				}
+				if typ == "*context.Context" {
+					return "*ctx"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// exprToString converts ast.Expr into a string for type matching
+func exprToString(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return "*" + exprToString(t.X)
+	case *ast.SelectorExpr:
+		return exprToString(t.X) + "." + t.Sel.Name
+	default:
+		return fmt.Sprintf("%T", e)
+	}
+}
+
+// RewriteFile loads a file, rewrites its contents, and saves it back
+func RewriteFile(filename string) error {
+	srcBytes, err := os.ReadFile(filename)
 	if err != nil {
-		fmt.Println("Error opening file:", filename, err)
-		return
+		return err
 	}
-	defer file.Close()
+	newContent, err := RewriteContent(string(srcBytes))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filename, []byte(newContent), 0644)
+}
 
-	var output []string
-	scanner := bufio.NewScanner(file)
-	reTodo := regexp.MustCompile(`\bcontext\.TODO\(\)`)
-	reBg := regexp.MustCompile(`\bcontext\.Background\(\)`)
-	reLocalCtx := regexp.MustCompile(`\bctx\b\s*[:=]`) // detect ctx := or ctx =
-
-	inFunc := false
-	braceCount := 0
-	ctxAvailable := false
-	rAvailable := false
-
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := scanner.Text()
-		trim := strings.TrimSpace(line)
-
-		// Detect function start
-		if !inFunc && strings.HasPrefix(trim, "func ") && strings.Contains(trim, "(") && strings.Contains(trim, ")") {
-			inFunc = true
-			braceCount = strings.Count(line, "{") - strings.Count(line, "}")
-
-			ctxAvailable = false
-			rAvailable = false
-
-			// Check function parameters
-			start := strings.Index(trim, "(")
-			end := strings.Index(trim, ")")
-			if start >= 0 && end > start {
-				params := trim[start+1 : end]
-				for _, p := range strings.Split(params, ",") {
-					p = strings.TrimSpace(p)
-					if strings.HasPrefix(p, "ctx") || strings.Contains(p, "ctx ") {
-						ctxAvailable = true
-					}
-					if strings.HasPrefix(p, "r") || strings.Contains(p, "r ") {
-						rAvailable = true
-					}
-				}
-			}
-		} else if inFunc {
-			// Update brace count
-			braceCount += strings.Count(line, "{") - strings.Count(line, "}")
-			if braceCount <= 0 {
-				inFunc = false
-				ctxAvailable = false
-				rAvailable = false
-			}
+// RewriteDir recursively rewrites all Go files in the given directory
+func RewriteDir(dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
 		}
-
-		newLine := line
-
-		// Detect local ctx declaration before replacement
-		if inFunc && reLocalCtx.MatchString(trim) {
-			ctxAvailable = true
+		if info.IsDir() {
+			return nil
 		}
-
-		// Only replace inside a function
-		if inFunc {
-			// Replace context.TODO()
-			if doTodo && reTodo.MatchString(line) {
-				if ctxAvailable {
-					newLine = reTodo.ReplaceAllString(line, "ctx")
-					fmt.Printf("%s:%d → replaced context.TODO() with ctx\n", filename, lineNum)
-				} else if rAvailable {
-					newLine = reTodo.ReplaceAllString(line, "r.Context()")
-					fmt.Printf("%s:%d → replaced context.TODO() with r.Context()\n", filename, lineNum)
-				}
-			}
-
-			// Replace context.Background()
-			if doBackground && reBg.MatchString(line) {
-				if ctxAvailable {
-					newLine = reBg.ReplaceAllString(line, "ctx")
-					fmt.Printf("%s:%d → replaced context.Background() with ctx\n", filename, lineNum)
-				} else if rAvailable {
-					newLine = reBg.ReplaceAllString(line, "r.Context()")
-					fmt.Printf("%s:%d → replaced context.Background() with r.Context()\n", filename, lineNum)
-				}
-			}
+		if filepath.Ext(path) == ".go" {
+			return RewriteFile(path)
 		}
-
-		output = append(output, newLine)
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading file:", filename, err)
-		return
-	}
-
-	// Write back without adding extra newline at EOF
-	content := strings.Join(output, "\n")
-	if err := os.WriteFile(filename, []byte(content+"\n"), 0644); err != nil {
-		fmt.Println("Error writing file:", filename, err)
-	}
+		return nil
+	})
 }
