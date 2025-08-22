@@ -81,6 +81,11 @@ while IFS=: read -r file line content; do
 	match=$(echo "$content" | grep -oE "$PATTERN")
 	[[ -z "$match" ]] && continue
 
+	# 🚫 Skip commented lines (single-line // or containing /* */)
+	if [[ "$content" =~ ^[[:space:]]*// ]] || [[ "$content" =~ /\* ]] || [[ "$content" =~ \*/ ]]; then
+		continue
+	fi
+
 	key="$file:$line:$match"
 
 	# Skip if already done
