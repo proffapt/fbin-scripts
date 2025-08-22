@@ -41,8 +41,14 @@ func main() {
 	}
 }
 
+// scopeInfo tracks ctx and r availability in a function scope
+type scopeInfo struct {
+	ctxType    string // "ctx", "*ctx", ""
+	rAvailable bool
+}
+
 // RewriteContent parses and rewrites Go source code string, replacing context.TODO()
-// with ctx only when ctx is in scope (as a function parameter or local variable).
+// with ctx or r.Context() only when in scope.
 func RewriteContent(src string) (string, error) {
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, "", src, parser.ParseComments)
@@ -51,82 +57,136 @@ func RewriteContent(src string) (string, error) {
 	}
 
 	lines := strings.Split(src, "\n")
+	scopeStack := []scopeInfo{}
 
-	for _, decl := range node.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
-		}
-
-		// Detect function parameter ctx
-		fnCtxType := detectCtxType(fn)
-		fnCtxAvailable := fnCtxType != "" // true if function param exists
-
-		start := fset.Position(fn.Body.Lbrace).Line - 1
-		end := fset.Position(fn.Body.Rbrace).Line - 1
-
-		depth := 0
-		ctxDepth := -1 // -1 means local ctx not declared yet
-		ctxAvailable := fnCtxAvailable
-		ctxType := fnCtxType
-
-		for i := start; i <= end && i < len(lines); i++ {
-			line := lines[i]
-
-			// Update brace depth
-			depth += strings.Count(line, "{") - strings.Count(line, "}")
-
-			// Detect local ctx variable
-			if ctxDepth == -1 {
-				if ok, detectedType := checkLocalCtxDeclaration(line); ok {
-					ctxDepth = depth
-					ctxAvailable = true
-					ctxType = detectedType // "ctx" or "*ctx"
-				}
+	var walkFuncs func(ast.Node)
+	walkFuncs = func(n ast.Node) {
+		ast.Inspect(n, func(node ast.Node) bool {
+			switch fn := node.(type) {
+			case *ast.FuncDecl:
+				pushScope(&scopeStack, fn.Type.Params)
+				processLines(&scopeStack, fn.Body, fset, lines)
+				popScope(&scopeStack)
+				return false
+			case *ast.FuncLit:
+				pushScope(&scopeStack, fn.Type.Params)
+				processLines(&scopeStack, fn.Body, fset, lines)
+				popScope(&scopeStack)
+				return false
 			}
-
-			// Replace context.TODO() only if ctx is available and in scope
-			if ctxAvailable && (ctxDepth == -1 || depth >= ctxDepth) {
-				lines[i] = replaceCtxInLine(line, ctxType)
-			}
-
-			// Reset local ctx availability when leaving the block
-			if ctxDepth != -1 && depth < ctxDepth {
-				ctxDepth = -1
-				ctxAvailable = fnCtxAvailable
-				ctxType = fnCtxType
-			}
-		}
+			return true
+		})
 	}
 
+	walkFuncs(node)
 	return strings.Join(lines, "\n"), nil
 }
 
-// replaceCtxInLine replaces context.TODO() with ctx, skipping comments and quoted strings
-func replaceCtxInLine(line string, ctxType string) string {
-	// Skip lines that declare ctx itself
-	ctxDeclRegex := regexp.MustCompile(`\bctx\s*:=`)
-	if ctxDeclRegex.MatchString(line) {
+// pushScope adds a new function scope based on parameters
+func pushScope(stack *[]scopeInfo, params *ast.FieldList) {
+	s := scopeInfo{}
+	if params != nil {
+		for _, param := range params.List {
+			for _, name := range param.Names {
+				if name.Name == "ctx" {
+					typ := exprToString(param.Type)
+					if typ == "context.Context" {
+						s.ctxType = "ctx"
+					}
+					if typ == "*context.Context" {
+						s.ctxType = "*ctx"
+					}
+				}
+				if name.Name == "r" {
+					typ := exprToString(param.Type)
+					if typ == "*http.Request" {
+						s.rAvailable = true
+					}
+				}
+			}
+		}
+	}
+	*stack = append(*stack, s)
+}
+
+// popScope removes the top-most scope
+func popScope(stack *[]scopeInfo) {
+	if len(*stack) > 0 {
+		*stack = (*stack)[:len(*stack)-1]
+	}
+}
+
+// processLines rewrites lines inside a function body
+func processLines(stack *[]scopeInfo, block *ast.BlockStmt, fset *token.FileSet, lines []string) {
+	if block == nil {
+		return
+	}
+
+	start := fset.Position(block.Lbrace).Line - 1
+	end := fset.Position(block.Rbrace).Line - 1
+
+	depth := 0
+	localCtxDepth := -1
+	localRDepth := -1
+
+	for i := start; i <= end && i < len(lines); i++ {
+		line := lines[i]
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+
+		// Detect local ctx declaration
+		if localCtxDepth == -1 {
+			if ok, detectedType := checkLocalCtxDeclaration(line); ok {
+				localCtxDepth = depth
+				(*stack)[len(*stack)-1].ctxType = detectedType
+			}
+		}
+
+		// Detect local r parameter (anonymous function param)
+		if localRDepth == -1 {
+			if ok := checkLocalRParam(line); ok {
+				localRDepth = depth
+				(*stack)[len(*stack)-1].rAvailable = true
+			}
+		}
+
+		// Replace context.TODO() based on current scope
+		lines[i] = replaceCtxOrRInLine(line, (*stack)[len(*stack)-1].ctxType, (*stack)[len(*stack)-1].rAvailable)
+
+		// Reset local ctx/r when leaving scope
+		if localCtxDepth != -1 && depth < localCtxDepth {
+			localCtxDepth = -1
+			(*stack)[len(*stack)-1].ctxType = ""
+		}
+		if localRDepth != -1 && depth < localRDepth {
+			localRDepth = -1
+			(*stack)[len(*stack)-1].rAvailable = false
+		}
+	}
+}
+
+// checkLocalRParam returns true if line contains r as a function param (simplified detection)
+func checkLocalRParam(line string) bool {
+	rParamRegex := regexp.MustCompile(`func\s*\([^)]*r\s+\*http\.Request[^)]*\)`)
+	return rParamRegex.MatchString(line)
+}
+
+// replaceCtxOrRInLine replaces context.TODO() with ctx or r.Context() based on scope
+func replaceCtxOrRInLine(line string, ctxType string, rAvailable bool) string {
+	if regexp.MustCompile(`\bctx\s*:=`).MatchString(line) {
 		return line
 	}
 
 	var result strings.Builder
-	inDoubleQuotes := false
-	inSingleQuotes := false
-	inBackticks := false
+	inDoubleQuotes, inSingleQuotes, inBackticks := false, false, false
 	i := 0
 
 	for i < len(line) {
 		c := line[i]
-
-		// Check for comment start
 		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
-			// Append the rest of the line as-is (comment)
 			result.WriteString(line[i:])
 			break
 		}
 
-		// Toggle quote states
 		if !inSingleQuotes && !inBackticks && c == '"' {
 			inDoubleQuotes = !inDoubleQuotes
 			result.WriteByte(c)
@@ -146,21 +206,18 @@ func replaceCtxInLine(line string, ctxType string) string {
 			continue
 		}
 
-		// Check for context.TODO() outside quotes/comments
 		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && strings.HasPrefix(line[i:], "context.TODO()") {
-			switch ctxType {
-			case "ctx":
-				result.WriteString("ctx")
-			case "*ctx":
-				result.WriteString("*ctx")
-			default:
+			if ctxType != "" {
+				result.WriteString(ctxType)
+			} else if rAvailable {
+				result.WriteString("r.Context()")
+			} else {
 				result.WriteString("context.TODO()")
 			}
 			i += len("context.TODO()")
 			continue
 		}
 
-		// Normal character
 		result.WriteByte(c)
 		i++
 	}
@@ -169,20 +226,12 @@ func replaceCtxInLine(line string, ctxType string) string {
 }
 
 // checkLocalCtxDeclaration returns whether the line declares a local ctx variable
-// and the type string: "ctx" or "*ctx"
 func checkLocalCtxDeclaration(line string) (bool, string) {
-	// Match lines like:
-	// ctx := context.Background()
-	// ctx := &context.Background()
-	// ctx := someOtherFunc()
-	// ctx := &someOtherFunc()
-	var ctxDeclRegex = regexp.MustCompile(`\bctx\s*:=\s*(\&)?`)
+	ctxDeclRegex := regexp.MustCompile(`\bctx\s*:=\s*(\&)?`)
 	matches := ctxDeclRegex.FindStringSubmatch(line)
 	if len(matches) == 0 {
 		return false, ""
 	}
-
-	// If first capturing group is "&", it's a pointer
 	if matches[1] == "&" {
 		return true, "*ctx"
 	}
