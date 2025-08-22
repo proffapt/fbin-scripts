@@ -13,7 +13,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: goap <file-or-directory> [file-or-directory ...]")
+		fmt.Println("Usage: goap [file-or-directory ...]")
 		os.Exit(1)
 	}
 
