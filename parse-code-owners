@@ -13,7 +13,7 @@ BRANCH_PREFIX="$1"
 CHANGED_FILES=($(git diff --name-only))
 
 if [ "${#CHANGED_FILES[@]}" -eq 0 ]; then
-	echo "No staged/changed files found."
+	echo "No changed files found."
 	exit 0
 fi
 
@@ -23,18 +23,22 @@ if [ ! -f "$CODEOWNERS_FILE" ]; then
 	exit 1
 fi
 
-# Parse CODEOWNERS into arrays
+# Parse CODEOWNERS
 PATTERNS=()
 REVIEWERS=()
 
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n "$line" ]]; do
 	[[ -z "$line" || "$line" =~ ^# ]] && continue
+
 	pattern=$(echo "$line" | awk '{print $1}')
 	reviewers=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
-	pattern=${pattern#./}
-	if [[ "$pattern" != */ ]] && [ -d "$pattern" ]; then
+
+	# Normalize directory patterns
+	if [[ "$pattern" != */ && ! "$pattern" =~ \.[^/]+$ ]]; then
 		pattern="$pattern/"
 	fi
+
+	pattern=${pattern#./}
 	PATTERNS+=("$pattern")
 	REVIEWERS+=("$reviewers")
 done <"$CODEOWNERS_FILE"
@@ -46,35 +50,34 @@ get_reviewers() {
 	for i in "${!PATTERNS[@]}"; do
 		pattern=${PATTERNS[$i]}
 		reviewers=${REVIEWERS[$i]}
-		if [[ "$pattern" == */ ]]; then
-			[[ "$file" == "$pattern"* ]] && {
-				echo "$reviewers"
-				return
-			}
-		else
-			[[ "$file" == "$pattern" ]] && {
-				echo "$reviewers"
-				return
-			}
+		# Always match as prefix
+		if [[ "$file" == "$pattern"* ]]; then
+			echo "$reviewers"
+			return
 		fi
 	done
 	echo "unassigned"
 }
 
-# Group files by reviewer set
-PR_GROUPS=()
+# Group files by reviewer set using plain arrays
+PR_GROUP_KEYS=()  # reviewer key strings
+PR_GROUP_FILES=() # corresponding files list
+
 for f in "${CHANGED_FILES[@]}"; do
-	reviewers=$(get_reviewers "$f" | tr ' ' '\n' | sort | tr '\n' ',' | sed 's/,$//')
+	reviewers=$(get_reviewers "$f" | tr ' ' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+	[[ -z "$reviewers" ]] && reviewers="unassigned"
+
 	found=0
-	for i in "${!PR_GROUPS[@]}"; do
-		if [[ "${PR_GROUPS[$i]}" == "$reviewers|"* ]]; then
-			PR_GROUPS[$i]="${PR_GROUPS[$i]} $f"
+	for i in "${!PR_GROUP_KEYS[@]}"; do
+		if [[ "${PR_GROUP_KEYS[$i]}" == "$reviewers" ]]; then
+			PR_GROUP_FILES[$i]="${PR_GROUP_FILES[$i]} $f"
 			found=1
 			break
 		fi
 	done
 	if [[ $found -eq 0 ]]; then
-		PR_GROUPS+=("$reviewers|$f")
+		PR_GROUP_KEYS+=("$reviewers")
+		PR_GROUP_FILES+=("$f")
 	fi
 done
 
@@ -82,11 +85,12 @@ TOTAL_FILES=${#CHANGED_FILES[@]}
 
 # Print plan
 pr_num=1
-for group in "${PR_GROUPS[@]}"; do
-	reviewers="${group%%|*}"
-	files="${group#*|}"
-	files_array=($files)
+for i in "${!PR_GROUP_KEYS[@]}"; do
+	reviewers="${PR_GROUP_KEYS[$i]}"
+	files="${PR_GROUP_FILES[$i]}"
+	read -ra files_array <<<"$files"
 	file_count=${#files_array[@]}
+
 	echo "PR $pr_num ($file_count/$TOTAL_FILES files):"
 	echo "  Reviewers: $reviewers"
 	echo "  Files:"
@@ -109,24 +113,19 @@ read -rp "Enter common commit message: " COMMIT_MSG
 
 # Create branches and commit files
 pr_num=1
-for group in "${PR_GROUPS[@]}"; do
-	reviewers="${group%%|*}"
-	files="${group#*|}"
-	files_array=($files)
+for i in "${!PR_GROUP_KEYS[@]}"; do
+	reviewers="${PR_GROUP_KEYS[$i]}"
+	files="${PR_GROUP_FILES[$i]}"
+	read -ra files_array <<<"$files"
 
 	# Ask for branch-specific postfix
 	read -rp "Enter postfix for branch $pr_num (press enter for none): " POSTFIX
 	branch_name="${BRANCH_PREFIX}"
 	[[ -n "$POSTFIX" ]] && branch_name="${branch_name}/${POSTFIX}"
 
-	# Create and checkout branch
 	git checkout -b "$branch_name"
-
-	# Add files and commit
 	git add "${files_array[@]}"
 	git commit -m "$COMMIT_MSG"
-
-	# Switch back to main branch
 	git checkout -
 	((pr_num++))
 done
