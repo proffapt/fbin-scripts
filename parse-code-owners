@@ -84,6 +84,7 @@ done
 TOTAL_FILES=${#CHANGED_FILES[@]}
 
 # Print plan
+echo "======= PR PLAN ======="
 pr_num=1
 for i in "${!PR_GROUP_KEYS[@]}"; do
 	reviewers="${PR_GROUP_KEYS[$i]}"
@@ -108,6 +109,13 @@ if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
 	exit 0
 fi
 
+# Ask if splitting is needed
+read -rp "Do you want to split PRs with more than 30 files? (y/N) " split_confirm
+SPLIT_ENABLED=0
+if [[ "$split_confirm" == "y" || "$split_confirm" == "Y" ]]; then
+	SPLIT_ENABLED=1
+fi
+
 # Ask for common commit message
 read -rp "Enter common commit message: " COMMIT_MSG
 
@@ -118,15 +126,28 @@ for i in "${!PR_GROUP_KEYS[@]}"; do
 	files="${PR_GROUP_FILES[$i]}"
 	read -ra files_array <<<"$files"
 
-	# Ask for branch-specific postfix
-	read -rp "Enter postfix for branch $pr_num (press enter for none): " POSTFIX
-	branch_name="${BRANCH_PREFIX}"
-	[[ -n "$POSTFIX" ]] && branch_name="${branch_name}/${POSTFIX}"
+	if [[ $SPLIT_ENABLED -eq 1 && ${#files_array[@]} -gt 30 ]]; then
+		# Split into chunks of 30
+		chunk_num=1
+		for ((j = 0; j < ${#files_array[@]}; j += 30)); do
+			chunk=("${files_array[@]:j:30}")
+			branch_name="${BRANCH_PREFIX}-${pr_num}_chunk${chunk_num}"
 
-	git checkout -b "$branch_name"
-	git add "${files_array[@]}"
-	git commit -m "$COMMIT_MSG"
-	git checkout -
+			git checkout -b "$branch_name"
+			git add "${chunk[@]}"
+			git commit -m "$COMMIT_MSG"
+			git checkout -
+			((chunk_num++))
+		done
+	else
+		# Normal PR
+		branch_name="${BRANCH_PREFIX}-${pr_num}"
+		git checkout -b "$branch_name"
+		git add "${files_array[@]}"
+		git commit -m "$COMMIT_MSG"
+		git checkout -
+	fi
+
 	((pr_num++))
 done
 
