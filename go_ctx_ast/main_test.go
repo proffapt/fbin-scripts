@@ -17,7 +17,644 @@ type TestCase struct {
 }
 
 var testCases = []TestCase{
+	{
+		name: "go routine with multi-line non-anon literal",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go s.AuditRepository.LogTemporalSignal(ctx, nil, coremodels.TemporalSignalLog{
+		SignalName: signalName,
+		UserID:     userID,
+		WorkflowID: workflowID,
+		SignalData: signalData,
+	})
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		s.AuditRepository.LogTemporalSignal(ctxWithoutCancel, nil, coremodels.TemporalSignalLog{
+			SignalName: signalName,
+			UserID:     userID,
+			WorkflowID: workflowID,
+			SignalData: signalData,
+		})
+	}()
+}
+`,
+	},
+	{
+		name: "multiple functions with and without context",
+		input: `
+package main
+
+import "context"
+
+func processA(ctx context.Context) {
+		doA(context.TODO())
+}
+
+func processB(ctx context.Context) {
+		doB(context.TODO())
+}
+func processC() {
+		doC(context.TODO())
+}
+
+func main(ctx context.Context) {
+	processA(ctx)
+	processB(ctx)
+	processC(ctx)
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func processA(ctx context.Context) {
+		doA(ctx)
+}
+
+func processB(ctx context.Context) {
+		doB(ctx)
+}
+func processC() {
+		doC(context.TODO())
+}
+
+func main(ctx context.Context) {
+	processA(ctx)
+	processB(ctx)
+	processC(ctx)
+}
+`,
+	},
+	{
+		name: "multiple functions with multiple go routines",
+		input: `
+package main
+
+import "context"
+
+func processA(ctx context.Context) {
+	go func() {
+		task1(context.TODO())
+	}()
+	go func() {
+		task2(context.TODO())
+	}()
+}
+
+func processB(ctx context.Context) {
+	go func() {
+		task3(context.TODO())
+	}()
+	go func() {
+		task4(context.TODO())
+	}()
+}
+
+func processC(ctx context.Context) {
+	go func() {
+		task3(context.TODO())
+	}()
+	go func() {
+		task4(context.TODO())
+	}()
+	go func() {
+		task4(context.TODO())
+	}()
+}
+
+func main(ctx context.Context) {
+	processA(ctx)
+	processB(ctx)
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func processA(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task1(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task2(ctxWithoutCancel)
+	}()
+}
+
+func processB(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task3(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task4(ctxWithoutCancel)
+	}()
+}
+
+func processC(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task3(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task4(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		task4(ctxWithoutCancel)
+	}()
+}
+
+func main(ctx context.Context) {
+	processA(ctx)
+	processB(ctx)
+}
+`,
+	},
+
+	{
+		name: "multiple anonymous go routines",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		someFunc1(context.TODO())
+	}()
+	go func() {
+		someFunc2(context.TODO())
+	}()
+	go func() {
+		someFunc3(context.TODO())
+	}()
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc1(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc2(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc3(ctxWithoutCancel)
+	}()
+}
+`,
+	},
 	// Function parameters
+	{
+		name: "go routine 1",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go someFunc(context.TODO())
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc(ctxWithoutCancel)
+	}()
+}
+`,
+	},
+
+	// Multiple go routines in same function
+	{
+		name: "multiple go routines",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go someFunc1(ctx)
+
+	go someFunc2(ctx)
+	go someFunc3(context.TODO())
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc1(ctxWithoutCancel)
+	}()
+
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc2(ctxWithoutCancel)
+	}()
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc3(ctxWithoutCancel)
+	}()
+}
+`,
+	},
+
+	{
+		name: "go routine with ctx parameter in func signature",
+		input: `
+package main
+
+import (
+	"context"
+)
+
+func main(ctx context.Context) {
+	go func(ctx context.Context, kycObj *lenderservice.KYCDocumentstructsDetails) {
+		defer wg.Done()
+		mediObj, err := media.Get(ctx, kycObj.MediaID)
+		if err != nil {
+			logger.WithLoanApplication(loanApplicationID).Warn(err)
+			return
+		}
+		if mediObj.MediaID == "" {
+			logger.WithLoanApplication(loanApplicationID).Warn("media not found")
+			return
+		}
+		kycObj.Path = mediObj.Path
+	}(ctx, kycObj)
+}
+`,
+		expected: `
+package main
+
+import (
+	"context"
+)
+
+func main(ctx context.Context) {
+	ctxWithoutCancel := context.WithoutCancel(ctx)
+	go func(ctx context.Context, kycObj *lenderservice.KYCDocumentstructsDetails) {
+		defer wg.Done()
+		mediObj, err := media.Get(ctx, kycObj.MediaID)
+		if err != nil {
+			logger.WithLoanApplication(loanApplicationID).Warn(err)
+			return
+		}
+		if mediObj.MediaID == "" {
+			logger.WithLoanApplication(loanApplicationID).Warn("media not found")
+			return
+		}
+		kycObj.Path = mediObj.Path
+	}(ctxWithoutCancel, kycObj)
+}
+`,
+	},
+	{
+		name: "go routine with multi-line struct literal",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		s.AuditRepository.LogTemporalSignal(ctx, nil, coremodels.TemporalSignalLog{
+			SignalName: signalName,
+			UserID:     userID,
+			WorkflowID: workflowID,
+			SignalData: signalData,
+		})
+	}()
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		s.AuditRepository.LogTemporalSignal(ctxWithoutCancel, nil, coremodels.TemporalSignalLog{
+			SignalName: signalName,
+			UserID:     userID,
+			WorkflowID: workflowID,
+			SignalData: signalData,
+		})
+	}()
+}
+`,
+	},
+	// Function parameters
+	{
+		name: "go routine 1",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go someFunc(context.TODO())
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc(ctxWithoutCancel)
+	}()
+}
+`,
+	},
+	{
+		name: "go routine 2",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	go someFunc(context.TODO())
+  doingSomething(b)
+	go someFunc2(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc(ctxWithoutCancel)
+	}()
+  doingSomething(b)
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		someFunc2(ctxWithoutCancel)
+	}()
+	 }
+	 `,
+	},
+	{
+		name: "go routine 3",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	go func() {
+		doingSomething(context.TODO())
+	}()
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		doingSomething(ctxWithoutCancel)
+	}()
+	 }
+	 `,
+	},
+	{
+		name: "go routine 4",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+	go func() {
+		ctx := context.Background()
+		doingSomething(ctx)
+	}()
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+	go func() {
+		ctx := context.Background()
+		doingSomething(ctx)
+	}()
+	 }
+	 `,
+	},
+	{
+		name: "go routine 5",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(context.TODO())
+	go func() {
+		doingSomething(ctx)
+		doingSomething2(ctx)
+	}()
+	someFunc(ctx)
+	someFunc2(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(ctx)
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		doingSomething(ctxWithoutCancel)
+		doingSomething2(ctxWithoutCancel)
+	}()
+	someFunc(ctx)
+	someFunc2(ctx)
+	 }
+	 `,
+	},
+	{
+		name: "go routine 6",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(context.TODO())
+	go func() {
+		doingSomething(a)
+	}()
+	someFunc(ctx)
+	someFunc2(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(ctx)
+	go func() {
+		doingSomething(a)
+	}()
+	someFunc(ctx)
+	someFunc2(ctx)
+	 }
+	 `,
+	},
+	{
+		name: "go routine 7",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(context.TODO())
+	go func() {
+		ctx := context.Background()
+		doingSomething(ctx)
+	}()
+	someFunc(ctx)
+	someFunc2(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(ctx)
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+
+		doingSomething(ctxWithoutCancel)
+	}()
+	someFunc(ctx)
+	someFunc2(ctx)
+	 }
+	 `,
+	},
+	{
+		name: "go routine 8",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+	someFunc(context.TODO())
+	go func() {
+		ctx := context.Background()
+		doingSomething(ctx)
+	}()
+	someFunc2(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+	someFunc(context.TODO())
+	go func() {
+		ctx := context.Background()
+		doingSomething(ctx)
+	}()
+	someFunc2(context.TODO())
+	 }
+	 `,
+	},
+	{
+		name: "go routine 9",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(context.TODO())
+	go func() {
+		doingSomething(ctx)
+	}()
+	someFunc2(context.TODO())
+	go func() {
+		doingSomething(ctx)
+	}()
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main(ctx context.Context) {
+	someFunc(ctx)
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		doingSomething(ctxWithoutCancel)
+	}()
+	someFunc2(ctx)
+	go func() {
+		ctxWithoutCancel := context.WithoutCancel(ctx)
+		doingSomething(ctxWithoutCancel)
+	}()
+	 }
+	 `,
+	},
 	{
 		name: "func def 1",
 		input: `
