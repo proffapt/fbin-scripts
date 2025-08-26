@@ -28,6 +28,7 @@ var testCases = []TestCase{
 		if something {
 			ctx := context.Background()
 			doingSomething(ctx)
+
 		} else {
 			doingSomething(context.TODO())
 		}
@@ -43,6 +44,7 @@ var testCases = []TestCase{
 		if something {
 			ctx := context.Background()
 			doingSomething(ctx)
+
 		} else {
 			doingSomething(context.TODO())
 		}
