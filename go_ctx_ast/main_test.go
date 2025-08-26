@@ -25,6 +25,45 @@ package main
 import "context"
 
 func main(ctx context.Context) {
+	go func(userID string) {
+		userObj, err := users.Get(context.TODO(), userID)
+		if err != nil {
+			errorHandler.ReportToSentryWithoutRequest(err)
+		}
+		usersutil.UpdateUserSource(userID, userObj.Source, map[string]interface{}{})
+	}(userID)
+}
+`,
+		expected: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
+	go func(userID string) {
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
+		userObj, err := users.Get(ctxWithoutCancel, userID)
+		if err != nil {
+			errorHandler.ReportToSentryWithoutRequest(err)
+		}
+		usersutil.UpdateUserSource(userID, userObj.Source, map[string]interface{}{})
+	}(userID)
+}
+`,
+	},
+	{
+		name: "go routine with multi-line non-anon literal",
+		input: `
+package main
+
+import "context"
+
+func main(ctx context.Context) {
 	go s.AuditRepository.LogTemporalSignal(ctx, nil, coremodels.TemporalSignalLog{
 		SignalName: signalName,
 		UserID:     userID,
@@ -40,7 +79,12 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		s.AuditRepository.LogTemporalSignal(ctxWithoutCancel, nil, coremodels.TemporalSignalLog{
 			SignalName: signalName,
 			UserID:     userID,
@@ -112,6 +156,10 @@ func processA(ctx context.Context) {
 	go func() {
 		task2(context.TODO())
 	}()
+
+	go func() {
+		task2(context.TODO())
+	}()
 }
 
 func processB(ctx context.Context) {
@@ -138,6 +186,7 @@ func processC(ctx context.Context) {
 func main(ctx context.Context) {
 	processA(ctx)
 	processB(ctx)
+	processC(ctx)
 }
 `,
 		expected: `
@@ -147,37 +196,82 @@ import "context"
 
 func processA(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task1(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
+		task2(ctxWithoutCancel)
+	}()
+
+	go func() {
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task2(ctxWithoutCancel)
 	}()
 }
 
 func processB(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task3(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task4(ctxWithoutCancel)
 	}()
 }
 
 func processC(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task3(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task4(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		task4(ctxWithoutCancel)
 	}()
 }
@@ -185,6 +279,7 @@ func processC(ctx context.Context) {
 func main(ctx context.Context) {
 	processA(ctx)
 	processB(ctx)
+	processC(ctx)
 }
 `,
 	},
@@ -206,6 +301,11 @@ func main(ctx context.Context) {
 	go func() {
 		someFunc3(context.TODO())
 	}()
+	
+	someshit(a, b)
+	go func() {
+		someFunc3(context.TODO())
+	}()
 }
 `,
 		expected: `
@@ -215,15 +315,41 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc1(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc2(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
+		someFunc3(ctxWithoutCancel)
+	}()
+	
+	someshit(a, b)
+	go func() {
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc3(ctxWithoutCancel)
 	}()
 }
@@ -248,14 +374,19 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc(ctxWithoutCancel)
 	}()
 }
 `,
 	},
 
-	// Multiple go routines in same function
+	// Multiple go tracer in same function
 	{
 		name: "multiple go routines",
 		input: `
@@ -277,16 +408,31 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc1(ctxWithoutCancel)
 	}()
 
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc2(ctxWithoutCancel)
 	}()
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc3(ctxWithoutCancel)
 	}()
 }
@@ -326,10 +472,15 @@ import (
 )
 
 func main(ctx context.Context) {
-	ctxWithoutCancel := context.WithoutCancel(ctx)
 	go func(ctx context.Context, kycObj *lenderservice.KYCDocumentstructsDetails) {
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		defer wg.Done()
-		mediObj, err := media.Get(ctx, kycObj.MediaID)
+		mediObj, err := media.Get(ctxWithoutCancel, kycObj.MediaID)
 		if err != nil {
 			logger.WithLoanApplication(loanApplicationID).Warn(err)
 			return
@@ -339,7 +490,7 @@ func main(ctx context.Context) {
 			return
 		}
 		kycObj.Path = mediObj.Path
-	}(ctxWithoutCancel, kycObj)
+	}(ctx, kycObj)
 }
 `,
 	},
@@ -368,7 +519,12 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		s.AuditRepository.LogTemporalSignal(ctxWithoutCancel, nil, coremodels.TemporalSignalLog{
 			SignalName: signalName,
 			UserID:     userID,
@@ -398,7 +554,12 @@ import "context"
 
 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc(ctxWithoutCancel)
 	}()
 }
@@ -424,12 +585,22 @@ func main(ctx context.Context) {
 
 	 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc(ctxWithoutCancel)
 	}()
   doingSomething(b)
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		someFunc2(ctxWithoutCancel)
 	}()
 	 }
@@ -455,7 +626,12 @@ func main(ctx context.Context) {
 
 	 func main(ctx context.Context) {
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		doingSomething(ctxWithoutCancel)
 	}()
 	 }
@@ -513,7 +689,12 @@ func main(ctx context.Context) {
 	 func main(ctx context.Context) {
 	someFunc(ctx)
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		doingSomething(ctxWithoutCancel)
 		doingSomething2(ctxWithoutCancel)
 	}()
@@ -578,7 +759,12 @@ func main(ctx context.Context) {
 	 func main(ctx context.Context) {
 	someFunc(ctx)
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 
 		doingSomething(ctxWithoutCancel)
 	}()
@@ -644,12 +830,22 @@ func main(ctx context.Context) {
 	 func main(ctx context.Context) {
 	someFunc(ctx)
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		doingSomething(ctxWithoutCancel)
 	}()
 	someFunc2(ctx)
 	go func() {
-		ctxWithoutCancel := context.WithoutCancel(ctx)
+		span, ctxWithoutCancel := tracer.StartOtelChildSpan(
+			context.WithoutCancel(ctx),
+			tracer.ChildSpanInfo{OperationName: "go-routine"},
+		)
+		defer span.End()
+
 		doingSomething(ctxWithoutCancel)
 	}()
 	 }

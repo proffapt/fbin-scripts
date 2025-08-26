@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -47,6 +46,9 @@ type scopeInfo struct {
 	ctxType             string // "ctx", "*ctx", ""
 	rAvailable          bool
 	hasCtxWithoutCancel bool // <- track ctxWithoutCancel per function
+	hasBody             bool
+	startLine           int
+	endLine             int
 }
 
 // RewriteContent parses and rewrites Go source code string, replacing context.TODO()
@@ -75,18 +77,19 @@ func RewriteContent(src string) (string, error) {
 	})
 
 	// Walk functions and literals
+	addedLinesCount := 0
 	var walkFuncs func(ast.Node)
 	walkFuncs = func(n ast.Node) {
 		ast.Inspect(n, func(node ast.Node) bool {
 			switch fn := node.(type) {
 			case *ast.FuncDecl:
-				pushScope(&fnScopeStack, fn.Type.Params)
-				processLines(&fnScopeStack, fn.Body, fset, &lines, goFuncBlocks)
+				pushScope(&fnScopeStack, fset, fn, addedLinesCount)
+				processFunction(&fnScopeStack, &lines, goFuncBlocks, &addedLinesCount)
 				popScope(&fnScopeStack)
 				return false
 			case *ast.FuncLit:
-				pushScope(&fnScopeStack, fn.Type.Params)
-				processLines(&fnScopeStack, fn.Body, fset, &lines, goFuncBlocks)
+				pushScope(&fnScopeStack, fset, fn, addedLinesCount)
+				processFunction(&fnScopeStack, &lines, goFuncBlocks, &addedLinesCount)
 				popScope(&fnScopeStack)
 				return false
 			}
@@ -98,14 +101,14 @@ func RewriteContent(src string) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-func processLines(fnScopeStack *[]scopeInfo, block *ast.BlockStmt, fset *token.FileSet, lines *[]string, goFuncBlocks map[int]int) {
-	if block == nil {
+func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks map[int]int, addedLinesCount *int) {
+	currFuncScope := &(*fnScopeStack)[len(*fnScopeStack)-1]
+	if !currFuncScope.hasBody {
 		return
 	}
 
-	currFuncScope := &(*fnScopeStack)[len(*fnScopeStack)-1]
-	start := fset.Position(block.Lbrace).Line - 1
-	end := fset.Position(block.Rbrace).Line - 1
+	start := currFuncScope.startLine
+	end := currFuncScope.endLine
 
 	if hasCtxWithoutCancelDecl(lines, start, end) {
 		currFuncScope.hasCtxWithoutCancel = true
@@ -115,6 +118,7 @@ func processLines(fnScopeStack *[]scopeInfo, block *ast.BlockStmt, fset *token.F
 	localCtxDepth := -1
 	localRDepth := -1
 
+	ogEnd := end
 	ctxWord := regexp.MustCompile(`\bctx\b`)
 	for i := start; i <= end && i < len(*lines); i++ {
 		line := (*lines)[i]
@@ -137,9 +141,12 @@ func processLines(fnScopeStack *[]scopeInfo, block *ast.BlockStmt, fset *token.F
 		}
 
 		if endLine, ok := goFuncBlocks[i]; ok && currFuncScope.ctxType != "" {
-			newI, newEndLine := processGoStatement(currFuncScope, lines, i, endLine, goFuncBlocks, ctxWord)
-			i = newI
-			end += newEndLine - endLine
+			newEndLine := processGoStatement(lines, i, endLine, goFuncBlocks, ctxWord)
+
+			lenAddedLines := newEndLine - endLine
+
+			i = newEndLine
+			end += lenAddedLines
 		} else {
 			(*lines)[i] = replaceCtxOrRInLine((*lines)[i], currFuncScope.ctxType, currFuncScope.rAvailable)
 		}
@@ -154,9 +161,10 @@ func processLines(fnScopeStack *[]scopeInfo, block *ast.BlockStmt, fset *token.F
 			currFuncScope.rAvailable = false
 		}
 	}
+	*addedLinesCount += end - ogEnd
 }
 
-func processGoStatement(currFuncScope *scopeInfo, lines *[]string, start, end int, goFuncBlocks map[int]int, ctxWord *regexp.Regexp) (int, int) {
+func processGoStatement(lines *[]string, start, end int, goFuncBlocks map[int]int, ctxWord *regexp.Regexp) int {
 	line := (*lines)[start]
 	trimmed := strings.TrimSpace(line)
 	isAnonymous := strings.HasPrefix(trimmed, "go func")
@@ -170,88 +178,75 @@ func processGoStatement(currFuncScope *scopeInfo, lines *[]string, start, end in
 	}
 
 	if !containsCtx {
-		return start, end
+		return end
 	}
 
 	if isAnonymous {
-		start, end = handleAnonymousGo(currFuncScope, lines, start, end, goFuncBlocks)
+		end = handleAnonymousGo(lines, start, end, goFuncBlocks)
 	} else {
-		start, end = handleNonAnonymousGo(lines, start, end, goFuncBlocks)
+		end = handleNonAnonymousGo(lines, start, end, goFuncBlocks)
 	}
 
-	return start, end
+	return end
 }
 
-func handleAnonymousGo(currFuncScope *scopeInfo, lines *[]string, start, end int, goFuncBlocks map[int]int) (int, int) {
-	openBraceLine := start
-	for openBraceLine <= end && !strings.Contains((*lines)[openBraceLine], "{") {
-		openBraceLine++
+func handleAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]int) int {
+	for start <= end && !strings.Contains((*lines)[start], "{") {
+		start++
+	}
+	if start > end {
+		return end
 	}
 
-	if openBraceLine > end {
-		return start, end
-	}
+	leadingTabs := (*lines)[start][:len((*lines)[start])-len(strings.TrimLeft((*lines)[start], " \t"))]
+	alreadyDeclared := hasCtxWithoutCancelDecl(lines, start+1, end+1)
 
-	leadingTabs := (*lines)[openBraceLine][:len((*lines)[openBraceLine])-len(strings.TrimLeft((*lines)[openBraceLine], " \t"))]
-
-	// Check if the func has ctx as parameter
-	hasCtxParam := regexp.MustCompile(`func\s*\([^)]*ctx\s+context\.Context`).MatchString((*lines)[start])
-
-	if hasCtxParam {
-		if !currFuncScope.hasCtxWithoutCancel {
-			// Insert before goroutine
-			insertLine := leadingTabs + "ctxWithoutCancel := context.WithoutCancel(ctx)"
-			*lines = append((*lines)[:start], append([]string{insertLine}, (*lines)[start:]...)...)
-			shiftGoFuncBlocks(goFuncBlocks, start, 1)
-			end++
-
-			// Replace ctx usage only if we declared
-			(*lines)[end] = replaceStandaloneCtx((*lines)[end], "ctxWithoutCancel")
-
-			currFuncScope.hasCtxWithoutCancel = true // mark declared for function
+	if !alreadyDeclared {
+		insertLines := []string{
+			leadingTabs + "\tspan, ctxWithoutCancel := tracer.StartOtelChildSpan(",
+			leadingTabs + "\t\tcontext.WithoutCancel(ctx),",
+			leadingTabs + "\t\ttracer.ChildSpanInfo{OperationName: \"go-routine\"},",
+			leadingTabs + "\t)",
+			leadingTabs + "\tdefer span.End()",
+			"",
 		}
-	} else {
-		alreadyDeclared := hasCtxWithoutCancelDecl(lines, openBraceLine+1, end+1)
+		*lines = append((*lines)[:start+1], append(insertLines, (*lines)[start+1:]...)...)
 
-		if !alreadyDeclared {
-			insertLine := leadingTabs + "\tctxWithoutCancel := context.WithoutCancel(ctx)"
-			*lines = append((*lines)[:openBraceLine+1], append([]string{insertLine}, (*lines)[openBraceLine+1:]...)...)
-			shiftGoFuncBlocks(goFuncBlocks, start, 1)
-			end++
+		// Shift indices of all future go statements AFTER this start line
+		shiftGoFuncBlocks(goFuncBlocks, start+1, len(insertLines))
+		end += len(insertLines)
+	}
 
-			for j := openBraceLine + 1; j <= end && j < len(*lines); j++ {
-				if strings.Contains((*lines)[j], "ctx := context.Background()") {
-					(*lines)[j] = ""
-				}
-				if !strings.Contains((*lines)[j], "ctxWithoutCancel :=") {
-					(*lines)[j] = strings.ReplaceAll((*lines)[j], "context.TODO()", "ctxWithoutCancel")
-					(*lines)[j] = replaceStandaloneCtx((*lines)[j], "ctxWithoutCancel")
-				}
+	// Replace context.TODO() inside the goroutine body
+	for j := start + 1; j <= end && j < len(*lines); j++ {
+		if strings.Contains((*lines)[j], "ctx := context.Background()") {
+			(*lines)[j] = ""
+		}
+		if !strings.Contains((*lines)[j], "context.WithoutCancel(") {
+			(*lines)[j] = strings.ReplaceAll((*lines)[j], "context.TODO()", "ctxWithoutCancel")
+			if !strings.Contains((*lines)[j], "}(ctx") {
+				(*lines)[j] = replaceStandaloneCtx((*lines)[j], "ctxWithoutCancel")
 			}
 		}
 	}
 
-	return start, end
+	start = end // mark as fully processed
+	return end
 }
 
-func hasCtxWithoutCancelDecl(lines *[]string, start, end int) bool {
-	ctxDeclRegex := regexp.MustCompile(`\bctxWithoutCancel\s*:=`)
-	for i := start; i <= end && i < len(*lines); i++ {
-		if ctxDeclRegex.MatchString((*lines)[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-func handleNonAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]int) (int, int) {
+func handleNonAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]int) int {
 	line := (*lines)[start]
 	leadingTabs := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 
 	// Insert go func() { and ctxWithoutCancel declaration
 	openBlock := []string{
 		leadingTabs + "go func() {",
-		leadingTabs + "\tctxWithoutCancel := context.WithoutCancel(ctx)",
+		leadingTabs + "\tspan, ctxWithoutCancel := tracer.StartOtelChildSpan(",
+		leadingTabs + "\t\tcontext.WithoutCancel(ctx),",
+		leadingTabs + "\t\ttracer.ChildSpanInfo{OperationName: \"go-routine\"},",
+		leadingTabs + "\t)",
+		leadingTabs + "\tdefer span.End()",
+		"",
 	}
 	*lines = append((*lines)[:start], append(openBlock, (*lines)[start:]...)...)
 
@@ -289,45 +284,64 @@ func handleNonAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]
 	shiftGoFuncBlocks(goFuncBlocks, start-len(openBlock), len(openBlock)+len(closeBlock))
 
 	// Return updated indices
-	start = end + len(closeBlock) - 1
 	end = end + len(closeBlock)
+	start = end
 
-	return start, end
+	return end
 }
 
+// shiftGoFuncBlocks reliably shifts only future keys
 func shiftGoFuncBlocks(goFuncBlocks map[int]int, insertAt, addedLines int) {
-	keys := make([]int, 0, len(goFuncBlocks))
-	for k := range goFuncBlocks {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-
-	for _, startLine := range keys {
-		oldEnd := goFuncBlocks[startLine]
+	newMap := make(map[int]int, len(goFuncBlocks))
+	for startLine, oldEnd := range goFuncBlocks {
 		if startLine > insertAt {
-			goFuncBlocks[startLine+addedLines] = oldEnd + addedLines
-			delete(goFuncBlocks, startLine)
-		} else if startLine < insertAt && oldEnd >= insertAt {
-			goFuncBlocks[startLine] = oldEnd + addedLines
+			newMap[startLine+addedLines] = oldEnd + addedLines
+		} else if startLine <= insertAt && oldEnd > insertAt {
+			// current block contains insert point
+			newMap[startLine] = oldEnd + addedLines
+		} else {
+			newMap[startLine] = oldEnd
 		}
 	}
-}
-
-func replaceStandaloneCtx(line string, replacement string) string {
-	ctxRegex := regexp.MustCompile(`\bctx\b`)
-	return ctxRegex.ReplaceAllStringFunc(line, func(match string) string {
-		idx := strings.Index(line, match)
-		if idx > 0 && line[idx-1] == '.' {
-			// part of a selector, do not replace
-			return match
-		}
-		return replacement
-	})
+	// replace original map
+	for k := range goFuncBlocks {
+		delete(goFuncBlocks, k)
+	}
+	for k, v := range newMap {
+		goFuncBlocks[k] = v
+	}
 }
 
 // pushScope adds a new function scope based on parameters
-func pushScope(stack *[]scopeInfo, params *ast.FieldList) {
+func pushScope(stack *[]scopeInfo, fset *token.FileSet, fnNode ast.Node, addedLinesCount int) {
 	s := scopeInfo{}
+	var params *ast.FieldList
+
+	switch fn := fnNode.(type) {
+	case *ast.FuncDecl:
+		params = fn.Type.Params
+
+		if fn.Body != nil {
+			s.hasBody = true
+			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
+			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
+		} else {
+			s.hasBody = false
+		}
+	case *ast.FuncLit:
+		params = fn.Type.Params
+
+		if fn.Body != nil {
+			s.hasBody = true
+			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
+			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
+		} else {
+			s.hasBody = false
+		}
+	default:
+		return
+	}
+
 	if params != nil {
 		for _, param := range params.List {
 			for _, name := range param.Names {
@@ -349,6 +363,7 @@ func pushScope(stack *[]scopeInfo, params *ast.FieldList) {
 			}
 		}
 	}
+
 	*stack = append(*stack, s)
 }
 
@@ -359,10 +374,26 @@ func popScope(stack *[]scopeInfo) {
 	}
 }
 
-// checkLocalRParam returns true if line contains r as a function param (simplified detection)
-func checkLocalRParam(line string) bool {
-	rParamRegex := regexp.MustCompile(`func\s*\([^)]*r\s+\*http\.Request[^)]*\)`)
-	return rParamRegex.MatchString(line)
+func hasCtxWithoutCancelDecl(lines *[]string, start, end int) bool {
+	ctxDeclRegex := regexp.MustCompile(`\bctxWithoutCancel\s*:=`)
+	for i := start; i <= end && i < len(*lines); i++ {
+		if ctxDeclRegex.MatchString((*lines)[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceStandaloneCtx(line string, replacement string) string {
+	ctxRegex := regexp.MustCompile(`\bctx\b`)
+	return ctxRegex.ReplaceAllStringFunc(line, func(match string) string {
+		idx := strings.Index(line, match)
+		if idx > 0 && line[idx-1] == '.' {
+			// part of a selector, do not replace
+			return match
+		}
+		return replacement
+	})
 }
 
 // replaceCtxOrRInLine replaces context.TODO() with ctx or r.Context() based on scope
@@ -418,6 +449,12 @@ func replaceCtxOrRInLine(line string, ctxType string, rAvailable bool) string {
 	}
 
 	return result.String()
+}
+
+// checkLocalRParam returns true if line contains r as a function param (simplified detection)
+func checkLocalRParam(line string) bool {
+	rParamRegex := regexp.MustCompile(`func\s*\([^)]*r\s+\*http\.Request[^)]*\)`)
+	return rParamRegex.MatchString(line)
 }
 
 // checkLocalCtxDeclaration returns whether the line declares a local ctx variable
