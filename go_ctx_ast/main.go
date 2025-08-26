@@ -43,12 +43,17 @@ func main() {
 
 // scopeInfo tracks ctx and r availability in a function scope
 type scopeInfo struct {
-	ctxType             string // "ctx", "*ctx", ""
-	rAvailable          bool
-	hasCtxWithoutCancel bool // <- track ctxWithoutCancel per function
-	hasBody             bool
-	startLine           int
-	endLine             int
+	// baseline from function params
+	baseCtxType    string // "", "ctx", "*ctx"
+	baseRAvailable bool
+
+	// currently active (may be shadowed by local ctx := ...)
+	ctxType    string
+	rAvailable bool
+
+	hasBody   bool
+	startLine int
+	endLine   int
 }
 
 // RewriteContent parses and rewrites Go source code string, replacing context.TODO()
@@ -110,10 +115,6 @@ func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks ma
 	start := currFuncScope.startLine
 	end := currFuncScope.endLine
 
-	if hasCtxWithoutCancelDecl(lines, start, end) {
-		currFuncScope.hasCtxWithoutCancel = true
-	}
-
 	depth := 0
 	localCtxDepth := -1
 	localRDepth := -1
@@ -122,17 +123,39 @@ func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks ma
 	ctxWord := regexp.MustCompile(`\bctx\b`)
 	for i := start; i <= end && i < len(*lines); i++ {
 		line := (*lines)[i]
-		depth += strings.Count(line, "{") - strings.Count(line, "}")
 
-		// Detect local ctx
+		// Compute min depth reached on this line and final depth after the line
+		d := depth
+		minD := d
+		for _, ch := range line {
+			if ch == '}' {
+				d--
+				if d < minD {
+					minD = d
+				}
+			} else if ch == '{' {
+				d++
+			}
+		}
+
+		// If we exited the local ctx/r scope anywhere on this line (e.g. `} else {`),
+		// reset BEFORE doing any replacements on this line.
+		if localCtxDepth != -1 && minD < localCtxDepth {
+			localCtxDepth = -1
+			currFuncScope.ctxType = currFuncScope.baseCtxType
+		}
+		if localRDepth != -1 && minD < localRDepth {
+			localRDepth = -1
+			currFuncScope.rAvailable = currFuncScope.baseRAvailable
+		}
+
+		// Detect new local ctx/r (depth at start-of-line)
 		if localCtxDepth == -1 {
 			if ok, detectedType := checkLocalCtxDeclaration(line); ok {
 				localCtxDepth = depth
 				currFuncScope.ctxType = detectedType
 			}
 		}
-
-		// Detect local r param
 		if localRDepth == -1 {
 			if ok := checkLocalRParam(line); ok {
 				localRDepth = depth
@@ -140,25 +163,27 @@ func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks ma
 			}
 		}
 
+		// Handle go-stmt or plain replacement using the (possibly reset) ctx/r
 		if endLine, ok := goFuncBlocks[i]; ok && currFuncScope.ctxType != "" {
 			newEndLine := processGoStatement(lines, i, endLine, goFuncBlocks, ctxWord)
-
 			lenAddedLines := newEndLine - endLine
-
 			i = newEndLine
 			end += lenAddedLines
 		} else {
 			(*lines)[i] = replaceCtxOrRInLine((*lines)[i], currFuncScope.ctxType, currFuncScope.rAvailable)
 		}
 
-		// Reset ctx/r on scope exit
+		// Commit final depth for this line
+		depth = d
+
+		// Safety: if the line ends with pure closing braces, also clear after the line
 		if localCtxDepth != -1 && depth < localCtxDepth {
 			localCtxDepth = -1
-			currFuncScope.ctxType = ""
+			currFuncScope.ctxType = currFuncScope.baseCtxType
 		}
 		if localRDepth != -1 && depth < localRDepth {
 			localRDepth = -1
-			currFuncScope.rAvailable = false
+			currFuncScope.rAvailable = currFuncScope.baseRAvailable
 		}
 	}
 	*addedLinesCount += end - ogEnd
@@ -320,23 +345,17 @@ func pushScope(stack *[]scopeInfo, fset *token.FileSet, fnNode ast.Node, addedLi
 	switch fn := fnNode.(type) {
 	case *ast.FuncDecl:
 		params = fn.Type.Params
-
 		if fn.Body != nil {
 			s.hasBody = true
 			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
 			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
-		} else {
-			s.hasBody = false
 		}
 	case *ast.FuncLit:
 		params = fn.Type.Params
-
 		if fn.Body != nil {
 			s.hasBody = true
 			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
 			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
-		} else {
-			s.hasBody = false
 		}
 	default:
 		return
@@ -348,21 +367,24 @@ func pushScope(stack *[]scopeInfo, fset *token.FileSet, fnNode ast.Node, addedLi
 				if name.Name == "ctx" {
 					typ := exprToString(param.Type)
 					if typ == "context.Context" {
-						s.ctxType = "ctx"
+						s.baseCtxType = "ctx"
 					}
 					if typ == "*context.Context" {
-						s.ctxType = "*ctx"
+						s.baseCtxType = "*ctx"
 					}
 				}
 				if name.Name == "r" {
-					typ := exprToString(param.Type)
-					if typ == "*http.Request" {
-						s.rAvailable = true
+					if exprToString(param.Type) == "*http.Request" {
+						s.baseRAvailable = true
 					}
 				}
 			}
 		}
 	}
+
+	// start active state from baseline
+	s.ctxType = s.baseCtxType
+	s.rAvailable = s.baseRAvailable
 
 	*stack = append(*stack, s)
 }

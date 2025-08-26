@@ -18,6 +18,39 @@ type TestCase struct {
 
 var testCases = []TestCase{
 	{
+		name: "if else scope",
+		input: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+		if something {
+			ctx := context.Background()
+			doingSomething(ctx)
+		} else {
+			doingSomething(context.TODO())
+		}
+		fuckOff(context.TODO())
+	 }
+	 `,
+		expected: `
+	 package main
+
+	 import "context"
+
+	 func main() {
+		if something {
+			ctx := context.Background()
+			doingSomething(ctx)
+		} else {
+			doingSomething(context.TODO())
+		}
+		fuckOff(context.TODO())
+	 }
+	 `,
+	},
+	{
 		name: "go routine with multi-line non-anon literal",
 		input: `
 package main
