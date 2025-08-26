@@ -45,10 +45,12 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
     methods[1] = "Exec"
     methods[2] = "Select"
     methods[3] = "NamedExec"
+    methods[4] = "PrepareNamed"
 
     for (i in methods) {
       gsub("database\\." methods[i] "\\(", "database." methods[i] "Context(ctx, ", s)
       gsub("tx\\." methods[i] "\\(", "tx." methods[i] "Context(ctx, ", s)
+      gsub("namedStmt\\." methods[i] "\\(", "namedStmt." methods[i] "Context(ctx, ", s)
     }
 
     return s
