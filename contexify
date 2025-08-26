@@ -33,8 +33,8 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
   }
 
   function v3sentrify(s) {
-    gsub(/errorHandler\.ReportToSentryWithoutRequest\([^)]*\)/,
-          "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
+    # gsub(/errorHandler\.ReportToSentryWithoutRequest\([^)]*\)/,
+    #       "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
     # gsub(/errorHandler\.ReportToSentryWithFields\([^)]*\)/,
     #       "errorHandler.ReportToSentryV3(ctx, err, nil)", s)
     return s
