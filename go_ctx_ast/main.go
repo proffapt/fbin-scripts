@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -11,13 +12,20 @@ import (
 	"strings"
 )
 
+var disableGoroutines bool
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: goap [file-or-directory ...]")
+	// Define flag
+	flag.BoolVar(&disableGoroutines, "no-goroutines", false, "Disable rewriting inside goroutines")
+	flag.Parse()
+
+	// Remaining args are file/dir paths
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Println("Usage: goap [--no-goroutines] <file-or-directory ...>")
 		os.Exit(1)
 	}
 
-	args := os.Args[1:]
 	for _, path := range args {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -120,7 +128,6 @@ func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks ma
 	localRDepth := -1
 
 	ogEnd := end
-	ctxWord := regexp.MustCompile(`\bctx\b`)
 	for i := start; i <= end && i < len(*lines); i++ {
 		line := (*lines)[i]
 
@@ -165,10 +172,15 @@ func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks ma
 
 		// Handle go-stmt or plain replacement using the (possibly reset) ctx/r
 		if endLine, ok := goFuncBlocks[i]; ok && currFuncScope.ctxType != "" {
-			newEndLine := processGoStatement(lines, i, endLine, goFuncBlocks, ctxWord)
-			lenAddedLines := newEndLine - endLine
-			i = newEndLine
-			end += lenAddedLines
+			if disableGoroutines {
+				i = endLine
+			} else {
+				ctxWord := regexp.MustCompile(`\bctx\b`)
+				newEndLine := processGoStatement(lines, i, endLine, goFuncBlocks, ctxWord)
+				lenAddedLines := newEndLine - endLine
+				i = newEndLine
+				end += lenAddedLines
+			}
 		} else {
 			(*lines)[i] = replaceCtxOrRInLine((*lines)[i], currFuncScope.ctxType, currFuncScope.rAvailable)
 		}
