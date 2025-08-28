@@ -1,3 +1,3 @@
 #!/bin/bash
 
-grep -i "$1" /Users/fbin-blr-0027/Desktop/lending-middleware/constants/constants.go | awk '{print $1}'
+grep -i "$1" /Users/fbin-blr-0027/Desktop/github/lending-middleware/constants/constants.go | awk '{print $1}'
