@@ -51,6 +51,7 @@ gawk -v start="$LINE_NO" -v FUNC_NAME="$FUNC_NAME" '
       gsub("database\\." methods[i] "\\(", "database." methods[i] "Context(ctx, ", s)
       gsub("tx\\." methods[i] "\\(", "tx." methods[i] "Context(ctx, ", s)
       gsub("namedStmt\\." methods[i] "\\(", "namedStmt." methods[i] "Context(ctx, ", s)
+      gsub("namedQuery\\." methods[i] "\\(", "namedQuery." methods[i] "Context(ctx, ", s)
     }
 
     return s
