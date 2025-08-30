@@ -4,545 +4,602 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
-	"go/parser"
+	"go/printer"
 	"go/token"
+	"go/types"
+
+	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"golang.org/x/tools/go/ast/astutil"
+	"golang.org/x/tools/go/packages"
 )
 
-var disableGoroutines bool
+var (
+	flagNoGoroutines bool
+	flagDryRun       bool
+)
+
+type ctxKind int
+
+const (
+	ctxNone    ctxKind = iota
+	ctxValue           // context.Context
+	ctxPointer         // *context.Context
+)
+
+// scopeFrame represents the availability of ctx and r at/after certain positions.
+// Availability positions are token.Pos values within the file's FileSet.
+type scopeFrame struct {
+	// ctxKind and ctxAvailPos indicate whether `ctx` is available (value or pointer)
+	// and from which position onward (the identifier position).
+	ctxKind     ctxKind
+	ctxAvailPos token.Pos
+
+	// rPresent and rAvailPos indicate whether `r` (type *http.Request) is available.
+	rPresent  bool
+	rAvailPos token.Pos
+}
+
+// skipInterval marks ranges (pos..end) inside which we must not rewrite (anonymous goroutine bodies).
+type skipInterval struct {
+	start token.Pos
+	end   token.Pos
+}
+
+func init() {
+	flag.BoolVar(&flagNoGoroutines, "no-goroutines", false, "Skip rewriting inside goroutines")
+	flag.BoolVar(&flagDryRun, "dry-run", false, "Print replacements but do not write files")
+}
 
 func main() {
-	// Define flag
-	flag.BoolVar(&disableGoroutines, "no-goroutines", false, "Disable rewriting inside goroutines")
+	log.SetFlags(0)
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <file-or-dir>...\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
-	// Remaining args are file/dir paths
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Usage: goap [--no-goroutines] <file-or-directory ...>")
-		os.Exit(1)
+	if flag.NArg() == 0 {
+		flag.Usage()
+		os.Exit(2)
 	}
 
-	for _, path := range args {
-		info, err := os.Stat(path)
+	var files []string
+
+	// Collect files
+	for _, arg := range flag.Args() {
+		info, err := os.Stat(arg)
 		if err != nil {
-			fmt.Printf("Error accessing %s: %v\n", path, err)
-			continue
+			log.Fatalf("stat %s: %v", arg, err)
 		}
 
 		if info.IsDir() {
-			if err := RewriteDir(path); err != nil {
-				fmt.Printf("Error processing directory %s: %v\n", path, err)
-			} else {
-				fmt.Printf("Processed directory successfully: %s\n", path)
+			// Recursively collect .go files
+			err := filepath.WalkDir(arg, func(path string, d os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !d.IsDir() && strings.HasSuffix(path, ".go") {
+					files = append(files, path)
+				}
+				return nil
+			})
+			if err != nil {
+				log.Fatalf("walk %s: %v", arg, err)
 			}
+		} else if strings.HasSuffix(arg, ".go") {
+			files = append(files, arg)
 		} else {
-			if err := RewriteFile(path); err != nil {
-				fmt.Printf("Error processing file %s: %v\n", path, err)
-			} else {
-				fmt.Printf("Processed file successfully: %s\n", path)
-			}
+			log.Fatalf("argument %s is not a Go file or directory", arg)
 		}
 	}
-}
 
-// scopeInfo tracks ctx and r availability in a function scope
-type scopeInfo struct {
-	// baseline from function params
-	baseCtxType    string // "", "ctx", "*ctx"
-	baseRAvailable bool
+	if len(files) == 0 {
+		log.Fatal("no Go files found")
+	}
 
-	// currently active (may be shadowed by local ctx := ...)
-	ctxType    string
-	rAvailable bool
+	// Build file patterns for packages.Load
+	var patterns []string
+	for _, f := range files {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			log.Fatalf("abs %s: %v", f, err)
+		}
+		patterns = append(patterns, "file="+abs)
+	}
 
-	hasBody   bool
-	startLine int
-	endLine   int
-}
+	cfg := &packages.Config{
+		Mode:  packages.LoadSyntax, // parse + type-check + syntax
+		Dir:   ".",                 // module root
+		Tests: false,
+	}
 
-// RewriteContent parses and rewrites Go source code string, replacing context.TODO()
-// with ctx, r.Context(), or ctxWithoutCancel (inside goroutines) when in scope.
-func RewriteContent(src string) (string, error) {
-	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		return "", err
+		log.Fatalf("packages.Load: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		log.Fatal("packages had errors")
 	}
 
-	lines := strings.Split(src, "\n")
-	fnScopeStack := []scopeInfo{}
-
-	// Collect all go statements (anonymous and non-anonymous)
-	goFuncBlocks := map[int]int{}
-	ast.Inspect(node, func(n ast.Node) bool {
-		goStmt, ok := n.(*ast.GoStmt)
-		if !ok {
-			return true
-		}
-		startLine := fset.Position(goStmt.Pos()).Line - 1
-		endLine := fset.Position(goStmt.End()).Line - 1
-		goFuncBlocks[startLine] = endLine
-		return true
-	})
-
-	// Walk functions and literals
-	addedLinesCount := 0
-	var walkFuncs func(ast.Node)
-	walkFuncs = func(n ast.Node) {
-		ast.Inspect(n, func(node ast.Node) bool {
-			switch fn := node.(type) {
-			case *ast.FuncDecl:
-				pushScope(&fnScopeStack, fset, fn, addedLinesCount)
-				processFunction(&fnScopeStack, &lines, goFuncBlocks, &addedLinesCount)
-				popScope(&fnScopeStack)
-				return false
-			case *ast.FuncLit:
-				pushScope(&fnScopeStack, fset, fn, addedLinesCount)
-				processFunction(&fnScopeStack, &lines, goFuncBlocks, &addedLinesCount)
-				popScope(&fnScopeStack)
-				return false
+	// Process each file individually
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			filename := pkg.Fset.File(file.Pos()).Name()
+			if !strings.HasSuffix(filename, ".go") {
+				continue
 			}
-			return true
-		})
-	}
-	walkFuncs(node)
-
-	return strings.Join(lines, "\n"), nil
-}
-
-func processFunction(fnScopeStack *[]scopeInfo, lines *[]string, goFuncBlocks map[int]int, addedLinesCount *int) {
-	currFuncScope := &(*fnScopeStack)[len(*fnScopeStack)-1]
-	if !currFuncScope.hasBody {
-		return
-	}
-
-	start := currFuncScope.startLine
-	end := currFuncScope.endLine
-
-	depth := 0
-	localCtxDepth := -1
-	localRDepth := -1
-
-	ogEnd := end
-	for i := start; i <= end && i < len(*lines); i++ {
-		line := (*lines)[i]
-
-		// Compute min depth reached on this line and final depth after the line
-		d := depth
-		minD := d
-		for _, ch := range line {
-			if ch == '}' {
-				d--
-				if d < minD {
-					minD = d
-				}
-			} else if ch == '{' {
-				d++
-			}
-		}
-
-		// If we exited the local ctx/r scope anywhere on this line (e.g. `} else {`),
-		// reset BEFORE doing any replacements on this line.
-		if localCtxDepth != -1 && minD < localCtxDepth {
-			localCtxDepth = -1
-			currFuncScope.ctxType = currFuncScope.baseCtxType
-		}
-		if localRDepth != -1 && minD < localRDepth {
-			localRDepth = -1
-			currFuncScope.rAvailable = currFuncScope.baseRAvailable
-		}
-
-		// Detect new local ctx/r (depth at start-of-line)
-		if localCtxDepth == -1 {
-			if ok, detectedType := checkLocalCtxDeclaration(line); ok {
-				localCtxDepth = depth
-				currFuncScope.ctxType = detectedType
-			}
-		}
-		if localRDepth == -1 {
-			if ok := checkLocalRParam(line); ok {
-				localRDepth = depth
-				currFuncScope.rAvailable = true
-			}
-		}
-
-		// Handle go-stmt or plain replacement using the (possibly reset) ctx/r
-		if endLine, ok := goFuncBlocks[i]; ok && currFuncScope.ctxType != "" {
-			if disableGoroutines {
-				i = endLine
+			if err := processFile(pkg, file, filename); err != nil {
+				log.Printf("[ERROR] %s: %v", filename, err)
 			} else {
-				ctxWord := regexp.MustCompile(`\bctx\b`)
-				newEndLine := processGoStatement(lines, i, endLine, goFuncBlocks, ctxWord)
-				lenAddedLines := newEndLine - endLine
-				i = newEndLine
-				end += lenAddedLines
-			}
-		} else {
-			(*lines)[i] = replaceCtxOrRInLine((*lines)[i], currFuncScope.ctxType, currFuncScope.rAvailable)
-		}
-
-		// Commit final depth for this line
-		depth = d
-
-		// Safety: if the line ends with pure closing braces, also clear after the line
-		if localCtxDepth != -1 && depth < localCtxDepth {
-			localCtxDepth = -1
-			currFuncScope.ctxType = currFuncScope.baseCtxType
-		}
-		if localRDepth != -1 && depth < localRDepth {
-			localRDepth = -1
-			currFuncScope.rAvailable = currFuncScope.baseRAvailable
-		}
-	}
-	*addedLinesCount += end - ogEnd
-}
-
-func processGoStatement(lines *[]string, start, end int, goFuncBlocks map[int]int, ctxWord *regexp.Regexp) int {
-	line := (*lines)[start]
-	trimmed := strings.TrimSpace(line)
-	isAnonymous := strings.HasPrefix(trimmed, "go func")
-	containsCtx := false
-
-	for j := start; j <= end && j < len(*lines); j++ {
-		if strings.Contains((*lines)[j], "context.TODO()") || ctxWord.MatchString((*lines)[j]) {
-			containsCtx = true
-			break
-		}
-	}
-
-	if !containsCtx {
-		return end
-	}
-
-	if isAnonymous {
-		end = handleAnonymousGo(lines, start, end, goFuncBlocks)
-	} else {
-		end = handleNonAnonymousGo(lines, start, end, goFuncBlocks)
-	}
-
-	return end
-}
-
-func handleAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]int) int {
-	for start <= end && !strings.Contains((*lines)[start], "{") {
-		start++
-	}
-	if start > end {
-		return end
-	}
-
-	leadingTabs := (*lines)[start][:len((*lines)[start])-len(strings.TrimLeft((*lines)[start], " \t"))]
-	alreadyDeclared := hasCtxWithoutCancelDecl(lines, start+1, end+1)
-
-	if !alreadyDeclared {
-		insertLines := []string{
-			leadingTabs + "\tspan, ctxWithoutCancel := tracer.StartOtelChildSpan(",
-			leadingTabs + "\t\tcontext.WithoutCancel(ctx),",
-			leadingTabs + "\t\ttracer.ChildSpanInfo{OperationName: \"go-routine\"},",
-			leadingTabs + "\t)",
-			leadingTabs + "\tdefer span.End()",
-			"",
-		}
-		*lines = append((*lines)[:start+1], append(insertLines, (*lines)[start+1:]...)...)
-
-		// Shift indices of all future go statements AFTER this start line
-		shiftGoFuncBlocks(goFuncBlocks, start+1, len(insertLines))
-		end += len(insertLines)
-	}
-
-	// Replace context.TODO() inside the goroutine body
-	for j := start + 1; j <= end && j < len(*lines); j++ {
-		if strings.Contains((*lines)[j], "ctx := context.Background()") {
-			(*lines)[j] = ""
-		}
-		if !strings.Contains((*lines)[j], "context.WithoutCancel(") {
-			(*lines)[j] = strings.ReplaceAll((*lines)[j], "context.TODO()", "ctxWithoutCancel")
-			if !strings.Contains((*lines)[j], "}(ctx") {
-				(*lines)[j] = replaceStandaloneCtx((*lines)[j], "ctxWithoutCancel")
+				log.Printf("[OK] %s processed", filename)
 			}
 		}
 	}
-
-	start = end // mark as fully processed
-	return end
 }
 
-func handleNonAnonymousGo(lines *[]string, start, end int, goFuncBlocks map[int]int) int {
-	line := (*lines)[start]
-	leadingTabs := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-
-	// Insert go func() { and ctxWithoutCancel declaration
-	openBlock := []string{
-		leadingTabs + "go func() {",
-		leadingTabs + "\tspan, ctxWithoutCancel := tracer.StartOtelChildSpan(",
-		leadingTabs + "\t\tcontext.WithoutCancel(ctx),",
-		leadingTabs + "\t\ttracer.ChildSpanInfo{OperationName: \"go-routine\"},",
-		leadingTabs + "\t)",
-		leadingTabs + "\tdefer span.End()",
-		"",
-	}
-	*lines = append((*lines)[:start], append(openBlock, (*lines)[start:]...)...)
-
-	// Shift indices due to insertion
-	start += len(openBlock)
-	end += len(openBlock)
-
-	// Process the original call line
-	line = (*lines)[start]
-	trimmed := strings.TrimSpace(line)
-	trimmed = strings.ReplaceAll(trimmed, "context.TODO()", "ctxWithoutCancel")
-	trimmed = replaceStandaloneCtx(trimmed, "ctxWithoutCancel")
-	(*lines)[start] = leadingTabs + "\t" + strings.TrimSpace(strings.TrimPrefix(trimmed, "go "))
-
-	// Handle multi-line calls
-	openParens := strings.Count((*lines)[start], "(") - strings.Count((*lines)[start], ")")
-	for j := start + 1; j <= end && openParens > 0; j++ {
-		line := (*lines)[j]
-		line = strings.ReplaceAll(line, "context.TODO()", "ctxWithoutCancel")
-		line = replaceStandaloneCtx(line, "ctxWithoutCancel")
-		(*lines)[j] = leadingTabs + line
-		openParens += strings.Count(line, "(") - strings.Count(line, ")")
-		if openParens <= 0 {
-			break
+// isContextType recognizes context.Context and pointer to it.
+func isContextType(t types.Type) (ctxKind, bool) {
+	switch u := t.(type) {
+	case *types.Named:
+		if u.Obj().Pkg() != nil && u.Obj().Pkg().Path() == "context" && u.Obj().Name() == "Context" {
+			return ctxValue, true
+		}
+	case *types.Pointer:
+		if kind, ok := isContextType(u.Elem()); ok {
+			// if the element is context.Context, treat as pointer kind
+			_ = kind
+			return ctxPointer, true
 		}
 	}
-
-	// Close the goroutine
-	closeBlock := []string{
-		leadingTabs + "}()",
-	}
-	*lines = append((*lines)[:end+1], append(closeBlock, (*lines)[end+1:]...)...)
-
-	// Shift goFuncBlocks map for inserted lines
-	shiftGoFuncBlocks(goFuncBlocks, start-len(openBlock), len(openBlock)+len(closeBlock))
-
-	// Return updated indices
-	end = end + len(closeBlock)
-	start = end
-
-	return end
+	return ctxNone, false
 }
 
-// shiftGoFuncBlocks reliably shifts only future keys
-func shiftGoFuncBlocks(goFuncBlocks map[int]int, insertAt, addedLines int) {
-	newMap := make(map[int]int, len(goFuncBlocks))
-	for startLine, oldEnd := range goFuncBlocks {
-		if startLine > insertAt {
-			newMap[startLine+addedLines] = oldEnd + addedLines
-		} else if startLine <= insertAt && oldEnd > insertAt {
-			// current block contains insert point
-			newMap[startLine] = oldEnd + addedLines
-		} else {
-			newMap[startLine] = oldEnd
-		}
+// isRequestPtrType detects *http.Request
+func isRequestPtrType(t types.Type) bool {
+	ptr, ok := t.(*types.Pointer)
+	if !ok {
+		return false
 	}
-	// replace original map
-	for k := range goFuncBlocks {
-		delete(goFuncBlocks, k)
-	}
-	for k, v := range newMap {
-		goFuncBlocks[k] = v
-	}
-}
-
-// pushScope adds a new function scope based on parameters
-func pushScope(stack *[]scopeInfo, fset *token.FileSet, fnNode ast.Node, addedLinesCount int) {
-	s := scopeInfo{}
-	var params *ast.FieldList
-
-	switch fn := fnNode.(type) {
-	case *ast.FuncDecl:
-		params = fn.Type.Params
-		if fn.Body != nil {
-			s.hasBody = true
-			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
-			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
-		}
-	case *ast.FuncLit:
-		params = fn.Type.Params
-		if fn.Body != nil {
-			s.hasBody = true
-			s.startLine = addedLinesCount + fset.Position(fn.Body.Lbrace).Line - 1
-			s.endLine = addedLinesCount + fset.Position(fn.Body.Rbrace).Line - 1
-		}
-	default:
-		return
-	}
-
-	if params != nil {
-		for _, param := range params.List {
-			for _, name := range param.Names {
-				if name.Name == "ctx" {
-					typ := exprToString(param.Type)
-					if typ == "context.Context" {
-						s.baseCtxType = "ctx"
-					}
-					if typ == "*context.Context" {
-						s.baseCtxType = "*ctx"
-					}
-				}
-				if name.Name == "r" {
-					if exprToString(param.Type) == "*http.Request" {
-						s.baseRAvailable = true
-					}
-				}
-			}
-		}
-	}
-
-	// start active state from baseline
-	s.ctxType = s.baseCtxType
-	s.rAvailable = s.baseRAvailable
-
-	*stack = append(*stack, s)
-}
-
-// popScope removes the top-most scope
-func popScope(stack *[]scopeInfo) {
-	if len(*stack) > 0 {
-		*stack = (*stack)[:len(*stack)-1]
-	}
-}
-
-func hasCtxWithoutCancelDecl(lines *[]string, start, end int) bool {
-	ctxDeclRegex := regexp.MustCompile(`\bctxWithoutCancel\s*:=`)
-	for i := start; i <= end && i < len(*lines); i++ {
-		if ctxDeclRegex.MatchString((*lines)[i]) {
+	if named, ok := ptr.Elem().(*types.Named); ok {
+		if named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Request" {
 			return true
 		}
 	}
 	return false
 }
 
-func replaceStandaloneCtx(line string, replacement string) string {
-	ctxRegex := regexp.MustCompile(`\bctx\b`)
-	return ctxRegex.ReplaceAllStringFunc(line, func(match string) string {
-		idx := strings.Index(line, match)
-		if idx > 0 && line[idx-1] == '.' {
-			// part of a selector, do not replace
-			return match
-		}
-		return replacement
-	})
-}
+func processFile(pkg *packages.Package, file *ast.File, filename string) error {
+	fset := pkg.Fset
+	info := pkg.TypesInfo
 
-// replaceCtxOrRInLine replaces context.TODO() with ctx or r.Context() based on scope
-func replaceCtxOrRInLine(line string, ctxType string, rAvailable bool) string {
-	if regexp.MustCompile(`\bctx\s*:=`).MatchString(line) {
-		return line
-	}
+	// First pass: find goroutine skips:
+	// - anonymous func literals in `go func(...) { ... }(...)` (skip their body only)
+	// - resolved functions invoked via `go someFunc(...)` or `go pkg.Func(...)` (skip whole target function)
+	skipRanges := []skipInterval{}
+	skipFuncs := map[*types.Func]bool{}
 
-	var result strings.Builder
-	inDoubleQuotes, inSingleQuotes, inBackticks := false, false, false
-	i := 0
-
-	for i < len(line) {
-		c := line[i]
-		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
-			result.WriteString(line[i:])
-			break
+	ast.Inspect(file, func(n ast.Node) bool {
+		gs, ok := n.(*ast.GoStmt)
+		if !ok {
+			return true
 		}
-
-		if !inSingleQuotes && !inBackticks && c == '"' {
-			inDoubleQuotes = !inDoubleQuotes
-			result.WriteByte(c)
-			i++
-			continue
-		}
-		if !inDoubleQuotes && !inBackticks && c == '\'' {
-			inSingleQuotes = !inSingleQuotes
-			result.WriteByte(c)
-			i++
-			continue
-		}
-		if !inDoubleQuotes && !inSingleQuotes && c == '`' {
-			inBackticks = !inBackticks
-			result.WriteByte(c)
-			i++
-			continue
-		}
-
-		if !inDoubleQuotes && !inSingleQuotes && !inBackticks && strings.HasPrefix(line[i:], "context.TODO()") {
-			if ctxType != "" {
-				result.WriteString(ctxType)
-			} else if rAvailable {
-				result.WriteString("r.Context()")
-			} else {
-				result.WriteString("context.TODO()")
+		call := gs.Call
+		// anonymous literal
+		if funLit, ok := call.Fun.(*ast.FuncLit); ok {
+			if funLit.Body != nil {
+				skipRanges = append(skipRanges, skipInterval{start: funLit.Body.Lbrace, end: funLit.Body.Rbrace})
 			}
-			i += len("context.TODO()")
-			continue
+			return true
 		}
-
-		result.WriteByte(c)
-		i++
-	}
-
-	return result.String()
-}
-
-// checkLocalRParam returns true if line contains r as a function param (simplified detection)
-func checkLocalRParam(line string) bool {
-	rParamRegex := regexp.MustCompile(`func\s*\([^)]*r\s+\*http\.Request[^)]*\)`)
-	return rParamRegex.MatchString(line)
-}
-
-// checkLocalCtxDeclaration returns whether the line declares a local ctx variable
-func checkLocalCtxDeclaration(line string) (bool, string) {
-	ctxDeclRegex := regexp.MustCompile(`\bctx\s*:=\s*(\&)?`)
-	matches := ctxDeclRegex.FindStringSubmatch(line)
-	if len(matches) == 0 {
-		return false, ""
-	}
-	if matches[1] == "&" {
-		return true, "*ctx"
-	}
-	return true, "ctx"
-}
-
-// exprToString converts ast.Expr into a string for type matching
-func exprToString(e ast.Expr) string {
-	switch t := e.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return "*" + exprToString(t.X)
-	case *ast.SelectorExpr:
-		return exprToString(t.X) + "." + t.Sel.Name
-	default:
-		return fmt.Sprintf("%T", e)
-	}
-}
-
-// RewriteFile loads a file, rewrites its contents, and saves it back
-func RewriteFile(filename string) error {
-	srcBytes, err := os.ReadFile(filename)
-	if err != nil {
-		return err
-	}
-	newContent, err := RewriteContent(string(srcBytes))
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filename, []byte(newContent), 0644)
-}
-
-// RewriteDir recursively rewrites all Go files in the given directory
-func RewriteDir(dir string) error {
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+		// named or selector: try resolve the function object and mark skipFuncs
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			if obj := info.Uses[fn]; obj != nil {
+				if tf, ok := obj.(*types.Func); ok {
+					skipFuncs[tf] = true
+				}
+			}
+		case *ast.SelectorExpr:
+			// selector.Sel is an Ident; Try to look up Uses for the Sel
+			if sel := fn.Sel; sel != nil {
+				if obj := info.Uses[sel]; obj != nil {
+					if tf, ok := obj.(*types.Func); ok {
+						skipFuncs[tf] = true
+					}
+				}
+			}
 		}
-		if info.IsDir() {
+		return true
+	})
+
+	// Helper: test if pos lies inside any skipRange
+	insideSkipRange := func(pos token.Pos) bool {
+		for _, r := range skipRanges {
+			if pos >= r.start && pos <= r.end {
+				return true
+			}
+		}
+		return false
+	}
+
+	// frame stack for scoping; each frame inherits parent's values on push
+	var frameStack []scopeFrame
+	pushFrame := func(copyFrom *scopeFrame) {
+		if copyFrom == nil {
+			frameStack = append(frameStack, scopeFrame{})
+			return
+		}
+		frameStack = append(frameStack, *copyFrom)
+	}
+	popFrame := func() {
+		if len(frameStack) == 0 {
+			return
+		}
+		frameStack = frameStack[:len(frameStack)-1]
+	}
+	currentFrame := func() *scopeFrame {
+		if len(frameStack) == 0 {
 			return nil
 		}
-		if filepath.Ext(path) == ".go" {
-			return RewriteFile(path)
-		}
+		return &frameStack[len(frameStack)-1]
+	}
+
+	// funcStack to know if current function is one that should be skipped entirely (because it's invoked by `go` elsewhere)
+	type funcCtx struct {
+		fnObj     *types.Func
+		skipWhole bool
+	}
+	var funcStack []funcCtx
+
+	// We'll collect whether we made changes
+	var replaced bool
+
+	// Use astutil.Apply to walk and potentially replace nodes
+	newFile := astutil.Apply(file,
+		// pre
+		func(c *astutil.Cursor) bool {
+			n := c.Node()
+			if n == nil {
+				return true
+			}
+
+			switch node := n.(type) {
+			case *ast.FuncDecl:
+				// entering a function decl: push new frame (inheriting nothing)
+				pushFrame(nil)
+
+				// determine if this function is one of the skipFuncs
+				var fnObj *types.Func
+				if node.Name != nil {
+					if obj := info.Defs[node.Name]; obj != nil {
+						if f, ok := obj.(*types.Func); ok {
+							fnObj = f
+						}
+					}
+				}
+				skip := fnObj != nil && skipFuncs[fnObj]
+				funcStack = append(funcStack, funcCtx{fnObj: fnObj, skipWhole: skip})
+
+				// Inspect params to fill baseline availability
+				if node.Type != nil && node.Type.Params != nil {
+					fr := currentFrame()
+					for _, fld := range node.Type.Params.List {
+						for _, nm := range fld.Names {
+							if nm == nil {
+								continue
+							}
+							// try to get the type from info.Defs (for param id) or Types map
+							var t types.Type
+							if obj := info.Defs[nm]; obj != nil {
+								t = obj.Type()
+							} else if tv := info.Types[nm]; tv.Type != nil {
+								t = tv.Type
+							}
+							if t == nil {
+								// sometimes the type is on the field.Type (use typeOf expression)
+								if fld.Type != nil {
+									if tv := info.TypeOf(fld.Type); tv != nil {
+										t = tv
+									}
+								}
+							}
+							if t == nil {
+								continue
+							}
+							if nm.Name == "ctx" {
+								if kind, ok := isContextType(t); ok {
+									fr.ctxKind = kind
+									fr.ctxAvailPos = nm.Pos()
+								}
+							} else if nm.Name == "r" {
+								if isRequestPtrType(t) {
+									fr.rPresent = true
+									fr.rAvailPos = nm.Pos()
+								}
+							}
+						}
+					}
+				}
+				return true
+
+			case *ast.FuncLit:
+				// entering a function literal: push new frame (inheriting nothing)
+				pushFrame(nil)
+
+				// func literal params
+				if node.Type != nil && node.Type.Params != nil {
+					fr := currentFrame()
+					for _, fld := range node.Type.Params.List {
+						for _, nm := range fld.Names {
+							if nm == nil {
+								continue
+							}
+							var t types.Type
+							if obj := info.Defs[nm]; obj != nil {
+								t = obj.Type()
+							} else if tv := info.Types[nm]; tv.Type != nil {
+								t = tv.Type
+							}
+							if t == nil && fld.Type != nil {
+								if tv := info.TypeOf(fld.Type); tv != nil {
+									t = tv
+								}
+							}
+							if t == nil {
+								continue
+							}
+							if nm.Name == "ctx" {
+								if kind, ok := isContextType(t); ok {
+									fr.ctxKind = kind
+									fr.ctxAvailPos = nm.Pos()
+								}
+							} else if nm.Name == "r" {
+								if isRequestPtrType(t) {
+									fr.rPresent = true
+									fr.rAvailPos = nm.Pos()
+								}
+							}
+						}
+					}
+				}
+				// For func literals, we can't easily map to a types.Func object for skipWhole detection.
+				// However, we already recorded anonymous goroutine bodies as skipRanges earlier.
+				funcStack = append(funcStack, funcCtx{fnObj: nil, skipWhole: false})
+				return true
+
+			case *ast.BlockStmt:
+				// push a child frame that inherits the parent frame
+				var copyFrom *scopeFrame
+				if cur := currentFrame(); cur != nil {
+					copyFrom = cur
+				}
+				pushFrame(copyFrom)
+				return true
+
+			case *ast.AssignStmt:
+				// handle `:=` new declarations for ctx and r
+				if node.Tok == token.DEFINE {
+					for _, lhs := range node.Lhs {
+						id, ok := lhs.(*ast.Ident)
+						if !ok || id == nil {
+							continue
+						}
+						// Try to get the declared object's type via info.Defs (should be present for :=)
+						var t types.Type
+						if obj := info.Defs[id]; obj != nil {
+							t = obj.Type()
+						} else if tv := info.Types[id]; tv.Type != nil {
+							t = tv.Type
+						}
+						// as fallback, attempt to get type from the corresponding RHS expr (best-effort)
+						if t == nil {
+							// find index of id in Lhs to map rhs
+							for idx, lhsExpr := range node.Lhs {
+								if lhsExpr == id && idx < len(node.Rhs) {
+									if rhsT := info.TypeOf(node.Rhs[idx]); rhsT != nil {
+										t = rhsT
+									}
+									break
+								}
+							}
+						}
+						if t == nil {
+							continue
+						}
+						fr := currentFrame()
+						if id.Name == "ctx" {
+							if kind, ok := isContextType(t); ok {
+								fr.ctxKind = kind
+								fr.ctxAvailPos = id.Pos()
+							}
+						} else if id.Name == "r" {
+							if isRequestPtrType(t) {
+								fr.rPresent = true
+								fr.rAvailPos = id.Pos()
+							}
+						}
+					}
+				}
+				return true
+
+			case *ast.ValueSpec:
+				// var declarations: var ctx context.Context or var ctx = something
+				for _, id := range node.Names {
+					if id == nil {
+						continue
+					}
+					if id.Name != "ctx" && id.Name != "r" {
+						continue
+					}
+					var t types.Type
+					if obj := info.Defs[id]; obj != nil {
+						t = obj.Type()
+					} else if node.Type != nil {
+						if tv := info.TypeOf(node.Type); tv != nil {
+							t = tv
+						}
+					} else {
+						// try initializer
+						for _, val := range node.Values {
+							if tv := info.TypeOf(val); tv != nil {
+								t = tv
+								break
+							}
+						}
+					}
+					if t == nil {
+						continue
+					}
+					fr := currentFrame()
+					if id.Name == "ctx" {
+						if kind, ok := isContextType(t); ok {
+							fr.ctxKind = kind
+							fr.ctxAvailPos = id.Pos()
+						}
+					} else if id.Name == "r" {
+						if isRequestPtrType(t) {
+							fr.rPresent = true
+							fr.rAvailPos = id.Pos()
+						}
+					}
+				}
+				return true
+
+			case *ast.CallExpr:
+				// We only rewrite context.TODO() call expressions.
+				// But first -- skip cases:
+				//  - if the containing function is flagged skipWhole (because it is invoked via `go target(...)`)
+				//  - if this call is inside an anonymous goroutine body and -no-goroutines is set (skipRanges)
+				// Determine if current function is skipWhole
+				if len(funcStack) > 0 && funcStack[len(funcStack)-1].skipWhole {
+					return true
+				}
+				// If -no-goroutines passed, skip any call that is inside skipRanges
+				if flagNoGoroutines {
+					if insideSkipRange(node.Lparen) {
+						return true
+					}
+				}
+				// Check selector expression: context.TODO
+				sel, ok := node.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				identX, ok := sel.X.(*ast.Ident)
+				if !ok || identX.Name != "context" || sel.Sel == nil || sel.Sel.Name != "TODO" {
+					return true
+				}
+				// TODO() must have zero args
+				if len(node.Args) != 0 {
+					return true
+				}
+				// Now find current frame and decide replacement
+				fr := currentFrame()
+				if fr == nil {
+					return true
+				}
+				pos := node.Pos()
+				// Decide replacement in priority:
+				// 1) ctx (if ctxKind != ctxNone and node pos >= ctxAvailPos)
+				// 2) *ctx if pointer
+				// 3) r.Context() (if rPresent and pos >= rAvailPos)
+				var repl ast.Expr
+				var replStr string
+				if fr.ctxKind != ctxNone && pos >= fr.ctxAvailPos {
+					if fr.ctxKind == ctxValue {
+						repl = ast.NewIdent("ctx")
+						replStr = "ctx"
+					} else {
+						// *ctx: represent as '(*ctx)'? In expressions `*ctx` is unary; we'll use unary expr.
+						repl = &ast.UnaryExpr{Op: token.MUL, X: ast.NewIdent("ctx")}
+						replStr = "*ctx"
+					}
+				} else if fr.rPresent && pos >= fr.rAvailPos {
+					repl = &ast.CallExpr{
+						Fun: &ast.SelectorExpr{
+							X:   ast.NewIdent("r"),
+							Sel: ast.NewIdent("Context"),
+						},
+					}
+					replStr = "r.Context()"
+				} else {
+					// nothing in scope -> leave as-is
+					return true
+				}
+
+				// Replace node
+				cReplace(c, repl)
+				p := fset.Position(pos)
+				if flagDryRun {
+					fmt.Printf("[DRY] %s:%d: context.TODO() -> %s\n", p.Filename, p.Line, replStr)
+				} else {
+					fmt.Printf("✅ %s:%d: replaced context.TODO() → %s\n", p.Filename, p.Line, replStr)
+				}
+				replaced = true
+
+				// do not visit children of replaced node
+				return false
+			}
+			return true
+		},
+		// post
+		func(c *astutil.Cursor) bool {
+			switch c.Node().(type) {
+			case *ast.BlockStmt:
+				popFrame()
+			case *ast.FuncDecl:
+				// pop funcStack and frame
+				if len(funcStack) > 0 {
+					funcStack = funcStack[:len(funcStack)-1]
+				}
+				popFrame()
+			case *ast.FuncLit:
+				if len(funcStack) > 0 {
+					funcStack = funcStack[:len(funcStack)-1]
+				}
+				popFrame()
+			}
+			return true
+		})
+
+	// newFile is an *ast.File (astutil.Apply returns interface{}); we don't need the returned value beyond writing
+	if newFile == nil {
+		return fmt.Errorf("internal rewrite returned nil AST")
+	}
+
+	if !replaced {
+		// nothing to change
 		return nil
-	})
+	}
+
+	// Write AST back to file preserving comments + layout (unless dry-run)
+	if flagDryRun {
+		return nil
+	}
+	if err := writeFile(fset, file, filename); err != nil {
+		return fmt.Errorf("writeFile: %w", err)
+	}
+	return nil
+}
+
+// cReplace centralizes cursor.Replace (wrapped to satisfy type expectations)
+func cReplace(c *astutil.Cursor, repl ast.Expr) *astutil.Cursor {
+	c.Replace(repl)
+	return c
+}
+
+// writeFile preserves comments + formatting
+func writeFile(fset *token.FileSet, f *ast.File, path string) error {
+	fOut, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer fOut.Close()
+
+	cfg := &printer.Config{Mode: printer.TabIndent | printer.UseSpaces, Tabwidth: 8}
+	return cfg.Fprint(fOut, fset, f)
 }
